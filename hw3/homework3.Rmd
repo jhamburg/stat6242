@@ -1,0 +1,31 @@
+---
+title: "Stat6242 Homework 3"
+author: "Jonathan Hamburg"
+date: "October 14, 2016"
+output: 
+  pdf_document: 
+    keep_tex: yes
+---
+
+```{r setup, include=FALSE}
+
+```
+
+
+```{r qC}
+
+bandwidthByCV <- function(x, y, h, nfold) {
+  
+  
+  stopifnot(length(x) > 1, length(x) == length(y), is.integer(nfold),
+            nfold <= length(x), length(k) > 1)
+  n <- length(x)
+  
+  
+  
+  
+  
+}
+
+
+```
