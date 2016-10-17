@@ -7,25 +7,60 @@ output:
     keep_tex: yes
 ---
 
-```{r setup, include=FALSE}
-
+```{r setup}
+library(np)
+library(caret)
 ```
 
 
 ```{r qC}
 
-bandwidthByCV <- function(x, y, h, nfold) {
+bandwidthByCV <- function(x, y, h, nfold = 10) {
+  # Load require packages
+  require(caret)
+  require(np)
   
+  # If bandwiths aren't specified, add defaults
+  if (missing(h)) {
+    h <- seq(from = 0, to = 1, length.out = 100)
+  }
+
+  # Argument logic
+  stopifnot(length(x) > 1, length(x) == length(y), nfold == trunc(nfold),
+            nfold <= length(x), length(h) > 1)
+
+  # Create an empty matrix to fill in
+  foldMSEs <- matrix(NA, nrow = nfold, ncol = length(h))
+  colnames(foldMSEs) <- h
   
-  stopifnot(length(x) > 1, length(x) == length(y), is.integer(nfold),
-            nfold <= length(x), length(k) > 1)
+  # Create folds for cv
   n <- length(x)
+  flds <- caret::createFolds(x, k = nfold, list = TRUE, returnTrain =FALSE)
+
+  # For each fold and bandwidth --- calculate MSE
+  for (i in seq_along(flds)) {
+    fold <- flds[[i]]
+    trainX <- x[fold]
+    trainY <- y[fold]
+    testX <- x[-fold]
+    testY <- y[-fold]
+    for (n in seq_along(h)) {
+      bw <- h[n]
+      mod <- np::npreg(bws = bw, txdat = trainX, tydat = trainY,
+                       exdat = testX, eydat = testY)
+      foldMSEs[i, n] <- mod$MSE
+    }
+  }
   
+  # Find average MSE for each bandwidth and the find the best one
+  mseCV <- colMeans(foldMSEs)
+  bestK <- mseCV[which.min(mseCV)]
   
-  
-  
-  
+  res <- list('bestBandwidth' = bestK,
+              'cvMSEs' = mseCV,
+              'foldMSEs' = foldMSEs)
+  res
 }
-
-
 ```
+
+
