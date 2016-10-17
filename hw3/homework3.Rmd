@@ -64,3 +64,56 @@ bandwidthByCV <- function(x, y, h, nfold = 10) {
 ```
 
 
+####################################
+# For simulation
+
+```{r qd data simulation}
+set.seed(10)
+X <- runif(1000, -4, 4)
+eps <- rnorm(1000, mean = 0, sd = .01^2)
+Y <- (exp(7 * X) / (1 + exp(7 * X))) + eps
+```
+
+Will calcuate based on K optimal. Since we do not know the first and second
+derivatives for m(x), we will use the approximation of K = n ^ -1/5.
+
+```{r qd kopt}
+#######################
+# Kopt ----
+#######################
+
+n <- length(X)
+k <- n ^ (-1/5)
+
+koptMod <- ksmooth(X, Y, kernel = 'normal', bandwidth = k)
+koptMod <- np::npreg(Y ~ X, bws = k)
+koptMSE <- koptMod$MSE
+```
+
+
+```{r qd kplugin}
+#######################
+# K Plugin ----
+#######################
+
+n <- length(X)
+k <- n ^ (-1/5)
+
+koptMod <- ksmooth(X, Y, kernel = 'normal', bandwidth = k)
+
+koptMSE <- (Y - koptMod)
+```
+
+
+```{r qd kcv}
+#######################
+# K CV ----
+#######################
+
+kcvMod <- bandwidthByCV(X, Y, nfold = 10)
+
+kcvMSE <- kcvMod$bestBandwidth
+
+cat(paste('Cross Validation MSE:', unname(kcvMSE), 
+      '\nBandwidth:', names(kcvMSE)))
+```
