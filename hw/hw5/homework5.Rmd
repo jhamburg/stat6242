@@ -1,0 +1,530 @@
+---
+title: "STAT 6242 Homework 5"
+author: "Jonathan Hamburg"
+date: "November 24, 2016"
+output: 
+  pdf_document: 
+    keep_tex: yes
+---
+
+```{r setup, message = FALSE, warning = FALSE}
+
+setwd(file.path('C:', 'Users', 'm1jmh07', 'Desktop', 'GW', 'STAT6242', 'hw', 'hw5'))
+
+
+library(leaps)
+library(mgcv)
+library(rpart)
+library(ROCR)
+library(MASS)
+
+```
+
+
+```{r q1 - preprocessing}
+
+# Read in raw data
+bfat <- read.table('bfatData.txt')
+bfatNms <- 
+  c('density', 'perBF', 'age', 'weight', 'height', 'neck', 'chest', 
+    'abdomen', 'hip', 'thigh', 'knee', 'ankle', 'biceps', 'forearm', 'wrist')
+names(bfat) <- bfatNms
+
+# Create train/test datasets
+bfTrain <- bfat[1:143, ]
+bfTest <- bfat[144:nrow(bfat), ]
+
+numParams <- ncol(bfat) - 1
+
+# Predict function for best subset routine
+# This is taken from the ISLR author
+predict.regsubsets <- function(object, newdata, id, ...){
+  form <- as.formula(object$call[[2]])
+  mat <- model.matrix(form, newdata)
+  coefi <- coef(object, id = id)
+  xvars <- names(coefi)
+  mat[, xvars] %*% coefi
+}
+```
+
+```{r q1 - multiple linear regression}
+
+
+# Multiple Linear Regression
+
+best.fit <- regsubsets(perBF ~ ., data = bfTrain, nvmax = ncol(bfTrain) - 1, 
+                     method = 'exhaustive')
+
+lmSum <- summary(best.fit)
+
+## CP Min
+(cpMin <- which.min(lmSum$cp))
+
+## BIC Min
+(bicMin <- which.min(lmSum$bic))
+
+## Adjusted R2 min
+(adjr2Max <- which.max(lmSum$adjr2))
+
+## Plots to examine the changes
+par(mfrow = c(2, 2))
+
+plot(lmSum$cp, xlab = '# of Parameters', ylab = 'Cp', type = 'l')
+points(cpMin, lmSum$cp[cpMin], col = "red", cex = 2, pch = 20)
+title('Best Selection via Cp')
+
+plot(lmSum$bic, xlab = '# of Parameters', ylab = 'BIC', type = 'l')
+points(bicMin, lmSum$bic[bicMin], col = "red", cex = 2, pch = 20)
+title('Best Selection via BIC')
+
+plot(lmSum$adjr2, xlab = '# of Parameters', ylab = 'Adjusted R2', type = 'l')
+points(adjr2Max, lmSum$adjr2[adjr2Max], col = "red", cex = 2, pch = 20)
+title('Best Selection via Adjusted R2')
+
+par(mfrow = c(1, 1))
+
+## Based on the output of the graphs, both the Cp and the BIC choose the best
+## model as the model with 3 parameters, so I will use that model.
+
+pred.best <- predict(best.fit, bfTest, id = 3)
+mse.best <- mean((bfTest$perBF - pred.best) ^ 2)
+
+```
+
+
+```{r q1 - regression trees}
+
+# Regression Trees
+
+tree.fit <- rpart(perBF ~ ., data = bfTrain)
+
+summary(tree.fit)
+
+par(mfrow = c(1, 1))
+
+plot(tree.fit,compress = TRUE, uniform = TRUE, 
+     branch = 0.4, margin = .10)
+text(tree.fit)
+
+##residuals
+plot(predict(tree.fit), residuals(tree.fit), xlab = "Fitted", ylab = "Residuals") 
+qqnorm(residuals(tree.fit))
+abline(0,1)
+
+
+printcp(tree.fit)
+plotcp(tree.fit)
+
+# Looking at the plot, size 5 of tree is in the same confidence interval
+# as size 7 of tree so will prune back to size 5
+pruned.fit <- prune.rpart(tree.fit, 0.019)
+
+plot(pruned.fit,compress = TRUE, uniform = TRUE, 
+     branch = 0.4, margin = .10)
+text(pruned.fit)
+
+pred.tree <- predict(pruned.fit, bfTest)
+mse.tree <- mean((bfTest$perBF - pred.tree) ^ 2)
+
+```
+
+```{r q1 - GAM}
+
+gam.fit <- gam(perBF ~  s(density) + s(age) + s(weight) + s(height) + s(neck) +
+                s(chest) + s(abdomen) + s(hip) + s(thigh) + s(knee) + s(ankle) +
+                s(biceps) + s(forearm) + s(wrist), data = bfTrain)
+
+gamSum <- summary(gam.fit)
+
+#  From the summary output, we can see that the only variables of 
+#  importance are density and height
+
+# upd.gam.fit <- gam(perBF ~ s(density) + s(height), data = bfTrain)
+# summary(upd.gam.fit)
+
+pred.gam <- predict(gam.fit, bfTest)
+mse.gam <- mean((bfTest$perBF - pred.gam) ^ 2)
+
+par(mfrow = c(1, 3))
+plot(gam.fit)
+par(mfrow = c(1, 1))
+
+```
+
+```{r q1 -- model comparison}
+
+# Looking at the different MSEs
+
+q1MSEs <- data.frame('MLM' = mse.best,
+                     'tree' = mse.tree,
+                     'gam' = mse.gam)
+
+q1MSEs
+
+# Looking at the different variables selected in each model
+lmSum
+
+tree.fit
+
+gamSum
+```
+
+Looking at the following models, based on the test MSE the Best Subset method 
+with 3 parameters provides the best model to predict the percent of Body Fat. 
+The test MSE is less than 1 while the other 2 methods are greater than 1 and 
+the Regression Tree method is the worst with an error around 7.5, which is much
+higher than the Multiple Linear Model.  
+
+If we look at the variables used in each one of these models, we can see that 
+density is the variable of most importance, which is something that we can 
+expect based on the pre-amble of the dataset which indicated that the 
+calculation of the percent body fat was based on the density.  That being said,
+the pruned regression tree (and even the unpruned regression tree) only used
+density as a splitting variable, which leads us to believe that using density 
+alone as a predictor is not the ideal model.  A better experiment would be to 
+see which of the other variables are important to predict percent body fat if
+density was not there. That is because the best subset method indicates that 
+chest and age are the two next important variables, while the Additive Model
+claim that height is the next important variable.  Therfore, I re-run the models
+without density in the dataset to see which variables this time are used to 
+predict percent body fat.
+
+
+```{r q1 - no density all models}
+
+# Remove density
+noDensityTrain <- bfTrain[, setdiff(names(bfTrain), 'density')]
+noDensityTest <- bfTest[, setdiff(names(bfTest), 'density')]
+
+# Multiple Linear Regression
+
+best.fit <- regsubsets(perBF ~ ., data = noDensityTrain, 
+                       nvmax = ncol(noDensityTrain) - 1, 
+                       method = 'exhaustive')
+
+lmSum <- summary(best.fit)
+
+## CP Min
+(cpMin <- which.min(lmSum$cp))
+
+## BIC Min
+(bicMin <- which.min(lmSum$bic))
+
+## Adjusted R2 min
+(adjr2Max <- which.max(lmSum$adjr2))
+
+## Plots to examine the changes
+par(mfrow = c(2, 2))
+
+plot(lmSum$cp, xlab = '# of Parameters', ylab = 'Cp', type = 'l')
+points(cpMin, lmSum$cp[cpMin], col = "red", cex = 2, pch = 20)
+title('Best Selection via Cp')
+
+plot(lmSum$bic, xlab = '# of Parameters', ylab = 'BIC', type = 'l')
+points(bicMin, lmSum$bic[bicMin], col = "red", cex = 2, pch = 20)
+title('Best Selection via BIC')
+
+plot(lmSum$adjr2, xlab = '# of Parameters', ylab = 'Adjusted R2', type = 'l')
+points(adjr2Max, lmSum$adjr2[adjr2Max], col = "red", cex = 2, pch = 20)
+title('Best Selection via Adjusted R2')
+
+par(mfrow = c(1, 1))
+
+## Based on the output of the graphs, wil use the simplest model chosen,
+## which was chosen by the BIC parameter with 5 parameters
+
+pred.best <- predict(best.fit, noDensityTest, id = 5)
+mse.best <- mean((noDensityTest$perBF - pred.best) ^ 2)
+
+# Regression Trees
+
+tree.fit <- rpart(perBF ~ ., data = noDensityTrain)
+summary(tree.fit)
+
+par(mfrow = c(1, 1))
+plot(tree.fit,compress = TRUE, uniform = TRUE, 
+     branch = 0.4, margin = .10)
+text(tree.fit)
+
+printcp(tree.fit)
+plotcp(tree.fit)
+
+# Looking at the plot, size 4 has the lowest error and is the simplest tree
+# with that error so will prune back to size 4
+
+pruned.fit <- prune.rpart(tree.fit, 0.034)
+
+plot(pruned.fit,compress = TRUE, uniform = TRUE, 
+     branch = 0.4, margin = .10)
+text(pruned.fit)
+
+# Variable importance
+tree.fit$variable.importance
+
+pred.tree <- predict(pruned.fit, noDensityTest)
+mse.tree <- mean((noDensityTest$perBF - pred.tree) ^ 2)
+
+# GAM
+gam.fit <- gam(perBF ~  s(age) + s(weight) + s(height) + s(neck) +
+                s(chest) + s(abdomen) + s(hip) + s(thigh) + s(knee) + 
+                s(ankle) + s(biceps) + s(forearm) + s(wrist), 
+               data = noDensityTrain)
+
+gamSum <- summary(gam.fit)
+
+pred.gam <- predict(gam.fit, noDensityTest)
+mse.gam <- mean((noDensityTest$perBF - pred.gam) ^ 2)
+
+# Looking at the different MSEs
+q1MSEs <- data.frame('MLM' = mse.best,
+                     'tree' = mse.tree,
+                     'gam' = mse.gam)
+
+q1MSEs
+
+# Looking at the different variables selected in each model
+lmSum
+
+pruned.fit
+
+gamSum
+```
+
+When removing density as one of the available parameters, the interesting thing
+to note is that abdomen is the most important variable for all three models. In
+the best subset selection, abdomen is the first variable selected, followed by 
+weight and then forearm. For the additive model abdomen is the only variable
+that is signifcant at the 0.001 level with writst and forearm signifcant at the
+0.01 level. Lastly, the pruned tree only uses abdomen, as it did with density
+in the original model.
+
+Looking at the MSEs, we again see that the Mulitple Linear Model is the one that
+does the best.  We can verify why this is the case if we look at plots of 
+percent body fat against each of the predictors, and we can see that there is 
+a linear relationship between the predictors and percent body fat, especially 
+for density.
+
+```{r pairs plot}
+
+pairs(perBF ~ ., data = bfat)
+
+```
+
+
+
+```{r q2 - preprocessing}
+
+credTr <- read.csv('Test50.csv')
+credTs <- read.csv('Training50.csv')
+
+keepVars <- c('Creditability',
+              'Account.Balance', 
+              'Payment.Status.of.Previous.Credit',
+              'Value.Savings.Stocks',
+              'Length.of.current.employment',
+              'Sex...Marital.Status', 
+              'No.of.Credits.at.this.Bank',
+              'Guarantors',
+              'Concurrent.Credits',
+              'Purpose')
+
+# All predictors are really categorical but since LDA needs continuous
+# predictors, will first convert all to numeric and then a different
+# object as factors (categorical variables)
+q2Train <- as.data.frame(lapply(credTr[, keepVars], as.numeric))
+q2Train$Creditability <- as.factor(q2Train$Creditability)
+q2Test <- credTs[, keepVars]
+q2Test$Creditability <- as.factor(q2Test$Creditability)
+
+q2TrainFact <- as.data.frame(lapply(q2Train, as.factor))
+q2TestFact <- as.data.frame(lapply(q2Test, as.factor))
+```
+
+```{r q2 -- Logistic Regression}
+
+logit.fit <- glm(Creditability ~ ., family = binomial("logit"), data = q2TrainFact)
+summary(logit.fit)
+drop1(logit.fit, test = "Chisq")
+
+logit.fit1 <- glm(Creditability ~ . -Length.of.current.employment, 
+                  family = binomial("logit"), data = q2TrainFact)
+summary(logit.fit1)
+drop1(logit.fit1, test = "Chisq")
+
+logit.fit2 <- glm(Creditability ~ . -Length.of.current.employment -Concurrent.Credits, 
+                  family = binomial("logit"), data = q2TrainFact)
+summary(logit.fit2)
+drop1(logit.fit2, test = "Chisq")
+
+logit.fit3 <- glm(Creditability ~ . -Length.of.current.employment -Concurrent.Credits
+                    -Purpose, family = binomial("logit"), data = q2TrainFact)
+summary(logit.fit3)
+drop1(logit.fit3, test = "Chisq")
+
+logit.fit4 <- glm(Creditability ~ . -Length.of.current.employment -Concurrent.Credits
+                    -Purpose -Sex...Marital.Status,
+                  family = binomial("logit"), data = q2TrainFact)
+summary(logit.fit4)
+drop1(logit.fit4, test = "Chisq")
+
+logit.fit5 <- glm(Creditability ~ . -Length.of.current.employment -Concurrent.Credits
+                    -Purpose -Sex...Marital.Status -No.of.Credits.at.this.Bank,
+                  family = binomial("logit"), data = q2TrainFact)
+summary(logit.fit5)
+drop1(logit.fit5, test = "Chisq")
+
+
+## CIs using standard errors
+confint.default(logit.fit5)
+
+## odds ratios only
+exp(coef(logit.fit5))
+
+## odds ratios and 95% CI
+exp(cbind(OR = coef(logit.fit5), confint(logit.fit5)))
+
+## plot the ROC curve for the predicted response values by the fitted model
+## for both the original and the updated models
+pred.vals <- prediction(logit.fit$fitted.values, q2TrainFact$Creditability)
+perf <- performance(pred.vals, measure = "tpr", x.measure = "fpr")
+
+plot(perf, col = 'red') 
+performance(pred.vals, measure = "auc")@y.values[[1]]
+
+par(new = TRUE)
+pred.vals <- prediction(logit.fit5$fitted.values, q2TrainFact$Creditability)
+perf <- performance(pred.vals, measure = "tpr", x.measure = "fpr")
+
+plot(perf, col = 'blue') 
+performance(pred.vals, measure = "auc")@y.values[[1]]
+
+
+## predicted probability
+pred.Logit.full <- predict(logit.fit, q2TestFact, type = "response")
+pred.Logit.upd <- predict(logit.fit5, q2TestFact, type = "response")
+
+pred.Logit.full <- ifelse(pred.Logit.full > 0.5,1,0)
+pred.Logit.upd <- ifelse(pred.Logit.upd > 0.5,1,0)
+
+misclass.logit.full <- mean(pred.Logit.full != q2TestFact$Creditability)
+misclass.logit.upd <- mean(pred.Logit.upd != q2TestFact$Creditability)
+
+# Full Model 
+print(paste('Logit Full Accuracy',1 - misclass.logit.full))
+print(paste('Logit Updated Accuracy',1 - misclass.logit.upd))
+
+```
+
+```{r q2 --- LDA}
+# LDA needs continous predictors so will not use the factorized
+# dataset
+
+lda.fit <- lda(Creditability ~ ., data = q2Train)
+lda.fit
+
+summary(lda.fit)
+plot(lda.fit)
+
+pred.lda.full <- predict(lda.fit, q2Test)
+
+misclass.lda.full <- mean(pred.lda.full$class != q2Test$Creditability)
+
+# Full Model 
+print(paste('LDA Accuracy',1 - misclass.lda.full))
+
+
+```
+
+```{r q2 -- Classification}
+
+tree.fit <- rpart(Creditability ~ ., data = q2TrainFact)
+summary(tree.fit)
+
+par(mfrow = c(1, 1))
+plot(tree.fit,compress = TRUE, uniform = TRUE, 
+     branch = 0.2, margin = .05)
+text(tree.fit)
+
+printcp(tree.fit)
+plotcp(tree.fit, upper = 'splits')
+
+# Looking at the plot, number of splits of size 5 hass the lowest error 
+# and is the simplest tree with that error so will prune back to size 5
+
+pruned.fit <- prune.rpart(tree.fit, 0.02)
+
+plot(pruned.fit,compress = TRUE, uniform = TRUE, 
+     branch = 0.4, margin = .10)
+text(pruned.fit)
+
+# Variable importance
+tree.fit$variable.importance
+
+pred.tree.full <- predict(tree.fit, q2TestFact, type = 'class')
+pred.tree.upd <- predict(pruned.fit, q2TestFact, type = 'class')
+
+misclass.tree.full <- mean(pred.tree.full != q2TestFact$Creditability)
+misclass.tree.upd <- mean(pred.tree.upd != q2TestFact$Creditability)
+
+# Full Model 
+print(paste('Tree Full Accuracy',1 - misclass.tree.full))
+print(paste('Tree Updated Accuracy',1 - misclass.tree.upd))
+
+```
+
+```{r q2 --- Assess Performance}
+
+# Logistic
+
+misclass.logit.full <- mean(pred.Logit.full != q2TestFact$Creditability)
+misclass.logit.upd <- mean(pred.Logit.upd != q2TestFact$Creditability)
+print(paste('Logit Full Accuracy',1 - misclass.logit.full))
+print(paste('Logit Updated Accuracy',1 - misclass.logit.upd))
+
+# LDA 
+
+misclass.lda.full <- mean(pred.lda.full$class != q2Test$Creditability)
+print(paste('LDA Accuracy',1 - misclass.lda.full))
+
+# Tree
+
+misclass.tree.full <- mean(pred.tree.full != q2TestFact$Creditability)
+misclass.tree.upd <- mean(pred.tree.upd != q2TestFact$Creditability)
+print(paste('Tree Full Accuracy',1 - misclass.tree.full))
+print(paste('Tree Updated Accuracy',1 - misclass.tree.upd))
+
+
+```
+
+In the end, each of the three different models are realtively equal in predicting
+the correct test class based on the training data about 75% of the time. The 
+best model in this case was the Full Tree model, which predicted 75.6% of the 
+correct classes, and the worst model was the LDA model, predicting only 73% of 
+the classes, which is something I expected since the predictors are actually
+categorical variables encoded as numeric variables, violating the assumptions of
+LDA.
+
+In all three models the most important predictor was the Account Balance, and
+most specifically if the individual actually had a balance. This makes sense 
+since whether an individual will repay a loan has a lot to do with whether the 
+individual has funds to pay back the loan. The next variables of importance are
+Value of Savings/Stocks, Payment Status of Previous Credit and Guarantors.
+Again, all of these make sense for determining risk in that if a person has 
+enough money in the bank, has paid off credit before and can have someone else
+back them up if they can't pay, then the risk level drops and the probability of
+the Creditability increases.
+
+While those are the next important variables, the different models put different
+weights on them. For instance, the classification trees put Value of Savings/Stocks
+as the second most important, the LDA model puts Guarantors as the second most
+important and Logisitic Regression puts Payment Status as the second most
+important.
+
+Given that each of these models have about the same predictive power, we would
+most likely choose the model that most closely aligns with domain knowledge.
+This means, that if based on domain knowledge we believe that Payment Status
+is the second most important, we would choose Logistic Regression while if we
+thought Value of Savings/Stocks were most important, then we would choose trees.
+Ulimately again, it would be a bad idea to choose LDA for this dataset since
+the predictors violate the assumption of being continous and thus the model
+may do odd things in the future.K

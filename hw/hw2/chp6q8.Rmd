@@ -1,0 +1,252 @@
+---
+title: "Chapter6 Question 8"
+output: 
+  pdf_document: 
+    keep_tex: yes
+---
+
+```{r setup}
+library(leaps)
+library(glmnet)
+```
+
+```{r qA}
+# Question a
+
+# For reproducibility, will set.seed()
+set.seed(10)
+
+x <- rnorm(100)
+e <- rnorm(100)
+```
+
+
+
+```{r qB}
+# Question b
+
+b0 <- 3
+b1 <- 2.5
+b2 <- 2
+b3 <- 1.5
+
+y <- b0 + (b1 * x) + (b2 * x^2) + (b3 * x^3) + e
+```
+
+```{r qc}
+# Question c
+
+dt <- data.frame(x, y)
+
+regfit.full <- regsubsets(y ~ poly(x, degree = 10, raw = TRUE), data = dt, nvmax = 10)
+regfit.sum <- summary(regfit.full)
+
+## CP Min
+cpMin <- which.min(regfit.sum$cp)
+cpMin
+
+## BIC Min
+bicMin <- which.min(regfit.sum$bic)
+bicMin
+
+## Adjusted R2 min
+adjr2Max <- which.max(regfit.sum$adjr2)
+adjr2Max
+
+## Plots to examine the changes
+par(mfrow = c(2, 2))
+
+
+plot(regfit.sum$cp, xlab = '# of Parameters', ylab = 'Cp', type = 'l')
+points(cpMin, regfit.sum$cp[cpMin], col = "red", cex = 2, pch = 20)
+title('Best Selection')
+
+plot(regfit.sum$bic, xlab = '# of Parameters', ylab = 'BIC', type = 'l')
+points(bicMin, regfit.sum$bic[bicMin], col = "red", cex = 2, pch = 20)
+title('Best Selection')
+
+plot(regfit.sum$adjr2, xlab = '# of Parameters', ylab = 'Adjusted R2', type = 'l')
+points(adjr2Max, regfit.sum$adjr2[adjr2Max], col = "red", cex = 2, pch = 20)
+title('Best Selection')
+```
+
+Looking at the results, the best model with Cp has 3 parameters, BIC has 3
+parameters, and AdjR2 has 5 parameters. However, when looking at the plots,
+we can see that for AdjR2, the graph drastically increases until 3 parameters
+and then is relatively flat from there on. Based on this output and the idea
+that we want to pick the simplest model, we can conclude that 3 parameters are
+the ideal number of parameters.
+
+Using the BIC output to get the right parameters is:
+
+```{r qC coef}
+# Best subset coeff
+coef(regfit.full, bicMin)
+
+```
+
+
+```{r qd}
+# Question d
+
+# Forward Stepwise
+regfit.fw <- regsubsets(y ~ poly(x, degree = 10, raw = TRUE), data = dt, 
+                          nvmax = 10, method = 'forward')
+fwSum <- summary(regfit.fw)
+
+## CP Min
+cpMinFw <- which.min(fwSum$cp)
+cpMinFw
+
+## BIC Min
+bicMinFw <- which.min(fwSum$bic)
+bicMinFw
+
+## Adjusted R2 min
+adjr2MaxFw <- which.max(fwSum$adjr2)
+adjr2MaxFw
+
+## Plots to examine the changes
+par(mfrow = c(2, 2))
+
+plot(fwSum$cp, xlab = '# of Parameters', ylab = 'Cp', type = 'l')
+points(cpMinFw, fwSum$cp[cpMinFw], col = "red", cex = 2, pch = 20)
+title('Forwards Selection')
+
+plot(fwSum$bic, xlab = '# of Parameters', ylab = 'BIC', type = 'l')
+points(bicMinFw, fwSum$bic[bicMinFw], col = "red", cex = 2, pch = 20)
+title('Forwards Selection')
+
+plot(fwSum$adjr2, xlab = '# of Parameters', ylab = 'Adjusted R2', type = 'l')
+points(adjr2MaxFw, fwSum$adjr2[adjr2MaxFw], col = "red", cex = 2, pch = 20)
+title('Forwards Selection')
+
+# Backward Stepwise
+regfit.bw <- regsubsets(y ~ poly(x, degree = 10, raw = TRUE), data = dt, 
+                          nvmax = 10, method = 'backward')
+bwSum <- summary(regfit.bw)
+
+## CP Min
+cpMinbw <- which.min(bwSum$cp)
+cpMinbw
+
+## BIC Min
+bicMinbw <- which.min(bwSum$bic)
+bicMinbw
+
+## Adjusted R2 min
+adjr2Maxbw <- which.max(bwSum$adjr2)
+adjr2Maxbw
+
+## Plots to examine the changes
+par(mfrow = c(2, 2))
+
+
+plot(bwSum$cp, xlab = '# of Parameters', ylab = 'Cp', type = 'l')
+points(cpMinbw, bwSum$cp[cpMinbw], col = "red", cex = 2, pch = 20)
+title('Backwards Selection')
+
+plot(bwSum$bic, xlab = '# of Parameters', ylab = 'BIC', type = 'l')
+points(bicMinbw, bwSum$bic[bicMinbw], col = "red", cex = 2, pch = 20)
+title('Backwards Selection')
+
+plot(bwSum$adjr2, xlab = '# of Parameters', ylab = 'Adjusted R2', type = 'l')
+points(adjr2Maxbw, bwSum$adjr2[adjr2Maxbw], col = "red", cex = 2, pch = 20)
+title('Backwards Selection')
+
+```
+
+The backwards selection process ended up with the exact same results as the 
+best selection. Cp was still 3, BIC 3, and AdjR2 5, however, again looking at 
+the graphs, 3 is the best model. For forwards selection, all of the graphs
+identified 3 parameters are the ideal set of parameters to use. With that in 
+mind, I can conclude that 3 parameters are the ideal amount to use.
+
+```{r qd coefs}
+# Forward coeff
+coef(regfit.fw, bicMinFw)
+
+# Backward coeff
+coef(regfit.bw, bicMinbw)
+```
+
+
+
+```{r qe}
+par(mfrow = c(1,1))
+
+set.seed(10)
+xMod <- model.matrix(y ~ poly(x, degree = 10, raw = TRUE), data = dt)[, -1]
+
+lassoMod <- cv.glmnet(xMod, y, alpha = 1)
+bLamda <- lassoMod$lambda.min
+bLamda
+
+plot(lassoMod)
+
+bModel <- glmnet(xMod, y, alpha = 1)
+predict(bModel, s = bLamda, type = 'coefficient')
+```
+
+The results are that the Lasso model picks up 5 parameters. One parameter, X9 is
+relatively close to 0 and can be considered negligent, but parameter X4 has a 
+value that is lower than the others but not that close to 0 given the value of 
+the other parameters. With this in mind we can say that the Lasso model may
+pick up a fourth parameter that was not in the original data.
+
+```{r qf}
+set.seed(10)
+b7 <- 5
+newY <- b0 + (b7 * x^7) + e
+
+newdt <- data.frame('x' = x, 'y' = newY)
+
+poly7mod <- regsubsets(y ~ poly(x, degree = 10, raw = TRUE), data = newdt, nvmax = 10)
+poly7sum <- summary(poly7mod)
+
+## CP Min
+newcpMin <- which.min(poly7sum$cp)
+newcpMin
+
+## BIC Min
+newBicMin <- which.min(poly7sum$bic)
+newBicMin
+
+## Adjusted R2 min
+newAdjr2Max <- which.max(poly7sum$adjr2)
+newAdjr2Max
+
+## Plots to examine the changes
+par(mfrow = c(2, 2))
+
+
+plot(poly7sum$cp, xlab = '# of Parameters', ylab = 'Cp', type = 'l')
+points(newcpMin, poly7sum$cp[newcpMin], col = "red", cex = 2, pch = 20)
+title('Best Selection')
+
+plot(poly7sum$bic, xlab = '# of Parameters', ylab = 'BIC', type = 'l')
+points(newBicMin, poly7sum$bic[newBicMin], col = "red", cex = 2, pch = 20)
+title('Best Selection')
+
+plot(poly7sum$adjr2, xlab = '# of Parameters', ylab = 'Adjusted R2', type = 'l')
+points(newAdjr2Max, poly7sum$adjr2[newAdjr2Max], col = "red", cex = 2, pch = 20)
+title('Best Selection')
+
+
+coef(poly7mod, newBicMin)
+
+newxMod <- model.matrix(y ~ poly(x, degree = 10, raw = TRUE), data = newdt)[, -1]
+newlassoMod <- cv.glmnet(newxMod, y, alpha = 1)
+newbLamda <- newlassoMod$lambda.min
+newbLamda
+plot(newlassoMod)
+newbModel <- glmnet(newxMod, newY, alpha = 1)
+predict(newbModel, s = newbLamda, type = 'coefficient')
+```
+
+For the best selection model, the Cp, BIC and Adjusted R2 all indicate that the
+model should only include 1 parameter. Additionally, the Lasso model also found 
+that only one parameter should be included in the model. Thus, both way chose
+the correct number of parameters but the coefficient for best selection was
+much closer to 5 (the actual value) than the Lasso model. The best selection 
+model was off by .0002 while the Lasso model is off by .2569.

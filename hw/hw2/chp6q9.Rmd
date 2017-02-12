@@ -1,0 +1,142 @@
+---
+title: "Chapter6 Question 9"
+output: 
+  pdf_document: 
+    keep_tex: yes
+---
+
+```{r setup}
+library(leaps)
+library(glmnet)
+library(pls)
+library(ISLR)
+data(College)
+college <- College
+```
+
+```{r qA}
+# Question a
+
+# For reproducibility, will set.seed()
+set.seed(10)
+
+trnRws <- sample(seq(1, nrow(college)), nrow(college) * .5)
+
+train <- college[trnRws, ]
+test <- college[-trnRws, ]
+```
+
+
+```{r qB}
+# Question b
+
+fit.lm <- lm(Apps ~., data = train)
+pred.lm <- predict(fit.lm, test)
+mse.lm <- mean((pred.lm - test$Apps) ^ 2)
+mse.lm
+```
+
+
+```{r qC}
+# Question c
+matTrain <- model.matrix(Apps ~ ., data = train)
+matTest <- model.matrix(Apps ~ ., data = test)
+
+grid <- 10 ^ seq(10, -2, length = 1000)
+fit.ridge <- glmnet(matTrain, train$Apps, alpha = 0, lambda = grid, thresh = 1e-12)
+cv.ridge <- cv.glmnet(matTrain, train$Apps, alpha = 0, lambda = grid, thresh = 1e-12)
+
+bLambda.ridge <- cv.ridge$lambda.min
+bLambda.ridge
+
+pred.ridge <- predict(fit.ridge, s = bLambda.ridge, newx = matTest)
+mse.ridge <- mean((pred.ridge - test$Apps) ^ 2)
+mse.ridge
+```
+
+
+```{r qD}
+# Question d
+fit.lasso <- glmnet(matTrain, train$Apps, alpha = 1, lambda = grid, thresh = 1e-12)
+cv.lasso <- cv.glmnet(matTrain, train$Apps, alpha = 1, lambda = grid, thresh = 1e-12)
+
+bLambda.lasso <- cv.lasso$lambda.min
+bLambda.lasso
+
+pred.lasso <- predict(fit.lasso, s = bLambda.lasso, newx = matTest)
+mse.lasso <- mean((pred.lasso - test$Apps) ^ 2)
+mse.lasso
+
+coef.lasso <- predict(fit.lasso, s = bLambda.lasso, type = 'coefficients')
+coef.lasso
+```
+According to the coefficients, there are 3 parameters that have a value 
+of 0:, P.Undergrad, Books, and Terminal.
+
+
+```{r qE}
+# Question e
+set.seed(10)
+
+
+fit.pcr <- pcr(Apps ~ ., data = train, scale = TRUE, validation = 'CV')
+
+summary(fit.pcr)
+validationplot(fit.pcr, val.type = 'MSEP')
+```
+
+The lowest CV error is the one with 16 components at 1358.
+
+```{r qE part2}
+# Question e
+pred.pcr <- predict(fit.pcr, test, ncomp = 16)
+mse.pcr <- mean((pred.pcr - test$Apps) ^ 2)
+mse.pcr
+```
+
+
+```{r qF}
+# Question f -- Partial Least Squares
+set.seed(10)
+
+fit.pls <- plsr(Apps ~ ., data = train, scale = TRUE, validation = 'CV')
+
+summary(fit.pls)
+validationplot(fit.pls, val.type = 'MSEP')
+```
+
+The lowest CV error is the one with 9 components at 1355.
+
+```{r qF part2}
+# Question f part 2
+pred.pls <- predict(fit.pls, test, ncomp = 9)
+mse.pls <- mean((pred.pls - test$Apps) ^ 2)
+mse.pls
+```
+
+
+To compare the different models, it is best to compute the R2 for each model:
+```{r qG}
+# Question g
+
+
+mses <- data.frame('Linear Model' = mse.lm,
+                   'Ridge' = mse.ridge,
+                   'Lasso' = mse.lasso,
+                   'PCR' = mse.pcr,
+                   'PLS' = mse.pls)
+
+testMSE <- mean((mean(test$Apps) - test$Apps) ^ 2)
+r2s <- 1-  mses/testMSE
+r2s
+
+which.max(r2s)
+```
+
+Overall, each of the methods predict the test set with at least 90% accuracy.
+Through this overview, the Lasso procedure was the best, predicting just over
+92% of the test error. On the other hand, Principal Component Regression 
+predicted the worst with only 91.3% of the test error. Despite these 
+differences, the models all have an R2 within 1.2% of one another meaning that
+all models are just about equal.
+

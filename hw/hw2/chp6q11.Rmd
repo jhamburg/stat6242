@@ -1,0 +1,247 @@
+---
+title: "Chapter6 Question 11"
+output: 
+  pdf_document: 
+    keep_tex: yes
+---
+
+```{r setup}
+library(leaps)
+library(glmnet)
+library(pls)
+library(MASS)
+data(Boston)
+boston <- Boston
+
+# Predict function for best subset routine
+#   This is taken from the ISLR author
+predict.regsubsets <- function(object, newdata, id, ...){
+  form <- as.formula(object$call[[2]])
+  mat <- model.matrix(form, newdata)
+  coefi <- coef(object, id = id)
+  xvars <- names(coefi)
+  mat[, xvars] %*% coefi
+}
+```
+
+```{r trainTest}
+# For reproducibility, will set.seed()
+set.seed(10)
+
+trnRws <- sample(seq(1, nrow(boston)), nrow(boston) * .8)
+
+train <- boston[trnRws, ]
+test <- boston[-trnRws, ]
+
+numParams <- ncol(boston) - 1
+```
+
+
+```{r lm}
+# Regular Linear Model
+
+fit.lm <- lm(crim ~., data = train)
+pred.lm <- predict(fit.lm, test)
+(mse.lm <- mean((pred.lm - test$crim) ^ 2))
+```
+
+
+```{r ridge}
+# Question c
+matTrain <- model.matrix(crim ~ ., data = train)
+matTest <- model.matrix(crim ~ ., data = test)
+
+set.seed(10)
+grid <- 10 ^ seq(10, -2, length = 1000)
+fit.ridge <- glmnet(matTrain, train$crim, alpha = 0, lambda = grid, thresh = 1e-12)
+cv.ridge <- cv.glmnet(matTrain, train$crim, alpha = 0, lambda = grid, thresh = 1e-12)
+
+(bLambda.ridge <- cv.ridge$lambda.min)
+
+pred.ridge <- predict(fit.ridge, s = bLambda.ridge, newx = matTest)
+(mse.ridge <- mean((pred.ridge - test$crim) ^ 2))
+(coef.ridge <- predict(fit.ridge, s = bLambda.ridge, type = 'coefficients'))
+```
+
+Here we can see that ridge regression reduces the coefficient of age to almost 
+nothing and the largest absolute coefficient is NOX followed by DIS. Besides
+that, TAX and Black also have relativley low coefficients.
+
+```{r lasso}
+# Question d
+set.seed(10)
+fit.lasso <- glmnet(matTrain, train$crim, alpha = 1, lambda = grid, thresh = 1e-12)
+cv.lasso <- cv.glmnet(matTrain, train$crim, alpha = 1, lambda = grid, thresh = 1e-12)
+
+bLambda.lasso <- cv.lasso$lambda.min
+bLambda.lasso
+
+pred.lasso <- predict(fit.lasso, s = bLambda.lasso, newx = matTest)
+mse.lasso <- mean((pred.lasso - test$crim) ^ 2)
+mse.lasso
+
+coef.lasso <- predict(fit.lasso, s = bLambda.lasso, type = 'coefficients')
+coef.lasso
+```
+
+In similiar fashion to ridge regression, age is completely removed from the
+model. Additionally, Black and TAX have low coefficients. Moreover, NOX and DIS
+continue to have the two highest coefficients by about the same proportion.
+
+```{r pcr}
+# PCR
+set.seed(10)
+
+fit.pcr <- pcr(crim ~ ., data = train, scale = TRUE, validation = 'CV')
+summary(fit.pcr)
+par(mfrow = c(1, 1))
+validationplot(fit.pcr, val.type = 'MSEP')
+
+# Using all components results in the lowest MSE
+pred.pcr <- predict(fit.pcr, test, ncomp = 13)
+mse.pcr <- mean((pred.pcr - test$crim) ^ 2)
+mse.pcr
+```
+
+In this case, the model with the lease CV MSE was the one with 13 components.
+This can be seen in the plot and thus we can conclude that the PCA Regression
+is the same as the LM regression.
+
+```{r pls}
+# Partial Least Squares
+set.seed(10)
+
+fit.pls <- plsr(crim ~ ., data = train, scale = TRUE, validation = 'CV')
+summary(fit.pls)
+par(mfrow = c(1, 1))
+validationplot(fit.pls, val.type = 'MSEP')
+
+# 10 and 11 components result in the lowest amount Will therefore
+# use 10 since it is the simplest model with the lowst MSE
+pred.pls <- predict(fit.pls, test, ncomp = 10)
+mse.pls <- mean((pred.pls - test$crim) ^ 2)
+mse.pls
+```
+
+In the Partial Least Squares regression, the cross validation MSE identified
+that the best number of parameters in the model should be either 10 or 11.
+Given that it is better to choose the simpler model, I chose to use the 10 
+parameter model.
+
+```{r bestSub}
+# Best Subset
+set.seed(10)
+
+# Will use 10 K-crossfold validation
+
+k <- 10
+folds <- sample(1:k, nrow(boston), replace = TRUE, prob = rep(k/100, k))
+cv.errors.best <- matrix(NA, k, numParams, dimnames = list(NULL, paste(1:numParams)))
+
+for (i in 1:k) {
+  best.fit <- regsubsets(crim ~ ., data = boston[folds != i, ], nvmax = numParams)
+  for (j in 1:numParams) {
+    pred.best <- predict(best.fit, boston[folds == i, ], id = j)
+    cv.errors.best[i, j] <- mean((boston$crim[folds == i] - pred.best) ^ 2)
+  }
+}
+
+mean.cv.errors.best <- apply(cv.errors.best, 2, mean)
+mse.csv.best <- mean.cv.errors.best[which.min(mean.cv.errors.best)]
+mse.csv.best
+
+# Graph of the errors
+par(mfrow = c(1, 1))
+plot(mean.cv.errors.best, type = 'l', xlab = 'Number of Parameters', 
+     ylab = 'CV.Errors Best')
+points(names(mse.csv.best), mse.csv.best, col = 'red',
+       pch = 20, cex = 2)
+
+#--------------------------------------
+# Re-running on the train/test data
+#--------------------------------------
+set.seed(10)
+
+final.best <- regsubsets(crim ~ ., data = train, nvmax = numParams)
+best.sum <- summary(final.best)
+coef.best <- coef(final.best, names(mse.csv.best))
+coef.best
+setdiff(names(boston), c('crim', names(coef.best)))
+
+errors.best.all <- vector('numeric', numParams)
+names(errors.best.all) <- seq(1, numParams)
+for (j in 1:numParams) {
+  pred.best.all <- predict(best.fit, test, id = j)
+  errors.best.all[j] <- mean((test$crim - pred.best.all) ^ 2)
+}
+
+mse.best <- errors.best.all[which.min(errors.best.all)]
+
+## CP, BIC, and Adj R2
+(cpMin <- which.min(best.sum$cp))
+(bicMin <- which.min(best.sum$bic))
+(adjr2Max <- which.max(best.sum$adjr2))
+
+par(mfrow = c(2, 2))
+plot(best.sum$cp, xlab = '# of Parameters', ylab = 'Cp', type = 'l')
+points(cpMin, best.sum$cp[cpMin], col = "red", cex = 2, pch = 20)
+title('Best Selection Cp')
+
+plot(best.sum$bic, xlab = '# of Parameters', ylab = 'BIC', type = 'l')
+points(bicMin, best.sum$bic[bicMin], col = "red", cex = 2, pch = 20)
+title('Best Selection BIC')
+
+plot(best.sum$adjr2, xlab = '# of Parameters', ylab = 'Adjusted R2', type = 'l')
+points(adjr2Max, best.sum$adjr2[adjr2Max], col = "red", cex = 2, pch = 20)
+title('Best Selection Adj R2')
+
+plot(errors.best.all, xlab = '# of Parameters', ylab = 'Test MSE', type = 'l')
+points(names(mse.best), mse.best, col = "red", cex = 2, pch = 20)
+title('Best Selection Test MSE')
+
+```
+
+The best subset model chooses a 12 parameter model based on the 10 K-fold cross
+validation. When running that model on the entire data, it drops Age. To compare
+to other methods, I then also ran the Best Subset algorithm on the train/test
+datasets.  The results were interesting in that when looking at the Cp, BIC, 
+Adjusted R2 and Test MSE, each gave a different number of parameters. Overall,
+the Cp gave a 6 parameter model while the adjusted R2 gave an 8 parameter model.
+On the other hand, the BIC and Test MSE gave a 2 and 3 parameter model
+respectfully. If I were to only have that information I would most likely choose
+a 2 or 3 parameter model. However, using this information in addition to the 
+Cross-Valdiated data, I find that it may be much better to increase the number 
+of folds since the results of the data can be very limiting if one ran one time.
+
+
+```{r qB}
+# Part B
+
+# To compare the different models, it is best to compute the R2 for each model:
+mses <- data.frame('Linear Model' = mse.lm,
+                   'Ridge' = mse.ridge,
+                   'Lasso' = mse.lasso,
+                   'PCR' = mse.pcr,
+                   'PLS' = mse.pls,
+                   'Best Subset' = mse.best)
+
+testMSE <- mean((mean(test$crim) - test$crim) ^ 2)
+r2s <- 1 - mses/testMSE
+r2s
+
+names(which.max(r2s))
+```
+Overall, according to these results the best model would be the Best Subset 
+model with 12 parameters. However, when comparing the R2 of the test data
+for all the different approaches, none of them are very high and many are at
+about 50%. Only Best Subset is greater by about 10% than the others. Ultimatley,
+as discussed previously in part A, this is probably a factor of the train/test
+split on the data and that if far more train/test splits were achieved (through
+a more intense cross-validation method) then these values are likely to change.
+
+
+Part C
+
+The model I choose only uses 12 parameters from the original feature set and
+does not include the Age parameter. Most of the other methods also dropped the
+age parameter when applicable.

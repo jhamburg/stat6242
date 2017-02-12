@@ -1,0 +1,100 @@
+---
+title: "Untitled"
+output: 
+  pdf_document: 
+    keep_tex: yes
+---
+
+```{r Prblm8Chp2}
+# Problem 8 from Chapter 2
+
+# a) Read "college" dataset into R ----
+url <- 'http://www-bcf.usc.edu/~gareth/ISL/College.csv'
+setInternet2()
+college <- read.csv(url)
+
+# b) ---- 
+# College names are already row names. Will not do code to transform that
+# will replace "fix()" with "head()" for printing
+#fix(college)
+head(college)
+rownames(college) <- college[, 1]
+#fix(college)
+head(college)
+college <- college[, -1]
+#fix(college)
+head(college)
+
+# c) ----
+# i.
+summary(college)
+
+# ii. scatterplot matrix of first 10 columns
+pairs(college[, 1:10])
+
+# iii. Create boxplot of outstate vs private
+plot(college$Private, college$Outstate)
+title('C) iii. Box Plot of Outstate vs Private',
+      xlab = 'College Is Private',
+      ylab = 'Number of Out of State Students')
+
+# iv. Create qualitative variable Elite
+elite <- rep('no', nrow(college))
+elite[college$Top10perc > 50] = 'yes'
+elite <- as.factor(elite)
+college <- data.frame(college, elite)
+
+summary(college$elite)
+plot(college$elite, college$Outstate)
+title('C) iv. Box Plot of Outstate vs Elite',
+      xlab = 'College Is Elite',
+      ylab = 'Number of Out of State Students')
+
+
+# v. produce histograms with differing numbers of bins
+vars <- names(college)
+factVars <- vars[vapply(college, class, character(1)) == 'factor']
+
+par(mfrow = c(3, 3))
+
+hist(college$Apps, breaks = 35)
+hist(college$Accept, breaks = 35)
+hist(college$Enroll, breaks = 35)
+hist(college$Room.Board, breaks = 40)
+hist(college$Book, breaks = 50)
+hist(college$Personal, breaks = 50)
+hist(college$Grad.Rate, breaks = 50)
+hist(college$Top10perc, breaks = 25)
+hist(college$Top25perc, breaks = 25)
+
+# vi. Continue to explore the data and write what you find.
+```
+
+From the previous question we can see various things from the histograms.
+In the first row of the plots, the distribution for the number of applications,
+accepted students, and student enrollment are all skewed right. This means that
+only a few colleges get a large number of applications, accept a large number of students,
+and enroll a large number of students. Further analysis will go into seeing if it is the same 
+colleges are "outliers" compared to the rest of the data, which may be an indicator of a data
+issue. In the second row, we can see various distributions of expenditures per college. In each
+graph, there is skewness to the right with the largest skewness in the Book cost and Personal cost.
+Interestingly, Room and Board costs are almost normally distributed, meaning that it may be independent
+from book and personal costs and can be confirmed by the following scatter plots due to the lack of
+correlation between the variables.
+
+```{r}
+pairs(college[, c('Room.Board', 'Books', 'Personal')])
+```
+
+Lastly, looking at the final row of the histograms, we can see several things. First there is a data
+issue in the dataset since in the plot of Grad.Rate, one school has a rate greater than 100%,
+which is impossible. Besides that the data are almost normal but have a little skewness left, 
+meaning that although there is a little skewness, since there is a normal distribution of graduation
+rate, we can make a hypothesis that there is not grade inflation. Moving on to the high school 
+achievement, it looks like the new students from the to 10 percent is skewed right and only a few 
+schools are predominantly made of up these students.  On the other hand, when new students are
+from the top 25% of their class, the data is more normal. Overall, we can see that there are a few
+elite schools that are made up of students that are only from the top 10 percent but otherwise, the
+rest of the colleges in the dataset make up a normal distribution of the country based on high school
+education since the graph seems to be normally distributed around 50%.
+Percent of their class. For the graduation rate, 

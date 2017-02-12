@@ -1,0 +1,522 @@
+---
+title: "homework4"
+author: "Jonathan Hamburg"
+date: "November 8, 2016"
+output: 
+  pdf_document: 
+    keep_tex: yes
+---
+
+
+```{r setup}
+library(caret)
+library(np)
+library(kknn)
+library(splines)
+library(ISLR)
+library(gridExtra)
+library(parallel)
+library(dplyr)
+library(tidyr)
+wage <- Wage
+
+```
+
+
+```{r probA}
+x <- wage$age
+y <- wage$wage
+xyDF <- data.frame(x = x, y = y)
+
+agelims <- range(x)
+age_grid <- seq(from = agelims[1], to = agelims[2])
+```
+
+```{r qa1}
+
+bandwidthByCV <- function(x, y, h = NULL, nfold = 5, 
+                          type = c('kernel', 'knn', 'lpf', 'splines'),
+                          seed = NULL, kerType = NULL, numBWs = 50) {
+  # Load require packages
+  require(caret)
+  require(np)
+  require(kknn)
+  require(splines)
+  
+  if (missing(type)) {
+    stop('Missing type parameter')
+  } else {
+    stopifnot(type %in% c('kernel', 'knn', 'lpf', 'splines'))
+    if (length(type) > 1 ) {
+      multiRun <- TRUE
+    } else {
+      multiRun <- FALSE
+    }
+  }
+  
+  # Argument logic
+  stopifnot(length(x) > 1, length(x) == length(y), nfold == trunc(nfold),
+            nfold <= length(x))
+
+  if (!is.null(seed)) {
+    stopifnot(is.numeric(seed))
+    set.seed(seed)
+  } 
+  
+  if (is.null(kerType)) {
+    kerType <- 'gaussian'
+  } else {
+    kerTypes <- c('gaussian', 'epanechnikov', 'uniform')
+    stopifnot(is.character(kerType) && kerType %in% kerTypes)
+  }
+
+    # If bandwiths aren't specified, add defaults
+  if (is.null(h)) {
+    h <- vector('list', length(type))
+    for (i in 1:length(type)) {
+      h[[i]] <- 
+      switch(type[i],
+             'kernel' = seq(from = 0.1, to = 5, length.out = numBWs),
+             'knn' = {
+               end <- floor(.10 * length(x))
+               res <- seq(from = 3, to = end, length.out = numBWs)
+               floor(res)
+             },
+             'lpf' = seq(from = 0.2, to = 1.5, length.out = numBWs),
+             'splines' = seq(from = 0.01, to = 2, length.out = numBWs))    
+    }
+  } 
+
+  # Create an empty matrix to fill in
+  foldMSEs <- vector('list', length(type))
+  for (i in 1:length(type)) {
+    foldMSEs[[i]] <- matrix(NA, nrow = nfold, ncol = length(h[[i]]))
+    colnames(foldMSEs[[i]]) <- h[[i]]
+  }
+
+  # Create folds for cv
+  n <- length(x)
+  flds <- caret::createFolds(x, k = nfold, list = TRUE, returnTrain = FALSE)
+
+  # For each fold and bandwidth --- calculate MSE
+  for (i in seq_along(flds)) {
+    fold <- flds[[i]]
+    trainX <- x[-fold]
+    trainY <- y[-fold]
+    train <- data.frame(x = trainX, y = trainY)
+    testX <- x[fold]
+    testY <- y[fold]
+    test <- data.frame(x = testX, y = testY)
+
+    if (i %% 20 == 0) {
+      cat('On the ', i, 'iteration.\n')
+    }
+
+    for (j in 1:length(type)) {
+      
+      for (n in seq_along(h[[j]])) {
+        bw <- h[[j]][n]
+        
+        foldMSEs[[j]][i, n] <- 
+          switch(type[[j]],
+                 'kernel' = { 
+                   mod <- np::npreg(bws = bw, txdat = trainX, tydat = trainY,
+                         exdat = testX, eydat = testY, bandwidth.compute = FALSE,
+                         ckertype = kerType)
+                   mod$MSE
+                 },
+                 'knn' = {
+                   mod <- kknn::kknn(y ~ x, train, test, k = bw, 
+                                     kernel = 'rectangular')
+                   mse <- sum((mod$fitted.values - testY) ^ 2) / length(testY)
+                   mse
+                 },
+                 'lpf' = {
+                   # Need to update how ran if test data has points outside of
+                   mod <- loess(y ~ x, train, span = bw, model = TRUE,
+                                degree = 1, surface = 'direct')
+                   
+                   pred <- predict(mod, testX) 
+                   mse <- sum((pred - testY) ^ 2) / length(testY)
+                   mse
+                 },
+                 'splines' = {
+                   mod <- smooth.spline(x = trainX, y = trainY, spar = bw)
+                   pred <- predict(mod, testX)
+                   mse <- sum((pred$y - testY) ^ 2) / length(testY)
+                   mse
+                 })
+      }
+    }
+  }
+  
+  # Find average MSE for each bandwidth and then find the best one
+  names(foldMSEs) <- type
+  
+  mseCV <- lapply(foldMSEs, colMeans)
+  names(mseCV) <- type
+  
+  bestK <- lapply(mseCV, function(x) x[which.min(x)])
+  names(bestK) <- type
+  
+  res <- list('bestBandwidth' = bestK,
+              'cvMSEs' = mseCV,
+              'foldMSEs' = foldMSEs)
+  res
+}
+```
+
+```{r 2a}
+
+# Find the Best Parameter
+
+kern <- bandwidthByCV(x, y, nfold = 5, type = 'kernel', seed = 10)
+knn <- bandwidthByCV(x, y, nfold = 5, type = 'knn', seed = 10)
+lpf <- bandwidthByCV(x, y, nfold = 5, type = 'lpf', seed = 10)
+splin <- bandwidthByCV(x, y, nfold = 5, type = 'splines', seed = 10)
+
+
+bestBW <- data.frame('kernel' = as.numeric(names(kern$bestBandwidth$kernel)),
+                     'KNN' = as.numeric(names(knn$bestBandwidth$knn)),
+                     'LocalPoly' = as.numeric(names(lpf$bestBandwidth$lpf)),
+                     'Splines' = as.numeric(names(splin$bestBandwidth$splines)))
+
+bestBW <- data.frame(lapply(bestBW, function(x) round(x, 4)))
+bestBW
+```
+
+```{r 2b}
+# 2 B
+
+# Find the Best Parameter
+
+kernMod <- np::npreg(bws = bestBW$kernel, txdat = x, tydat = y, 
+                     bandwidth.compute = FALSE)
+knnMod <- kknn::kknn(y ~ x, xyDF, data.frame(x = age_grid),
+                     k = bestBW$KNN, kernel = 'rectangular')
+lpfMod <- loess(y ~ x, xyDF, span = bestBW$LocalPoly, 
+                model = TRUE, degree = 1, surface = 'direct')
+splinMod <- smooth.spline(x = x, y = y, spar = bestBW$Splines)
+
+
+# Get fitted values of age_grid
+kernFit <- predict(kernMod, age_grid, se.fit = FALSE)
+knnFit <- fitted(knnMod)
+lpfFit <- predict(lpfMod, age_grid)
+splinFit <- predict(splinMod, age_grid)$y
+
+
+basePlot <- ggplot() + geom_point(aes(x, y)) 
+
+kernPlotFit <- 
+  basePlot + 
+  geom_line(aes(age_grid, kernFit), col = 'red',
+            lwd = 1.5) +
+  ggtitle(paste('Kernel with bandwidth', bestBW$kernel))
+
+knnPlotFit <- 
+  basePlot + 
+  geom_line(aes(age_grid, knnFit), col = 'red',
+            lwd = 1.5) +
+  ggtitle(paste('KNN with bandwidth', bestBW$KNN))
+
+
+lpfPlotFit <- 
+  basePlot + 
+  geom_line(aes(age_grid, lpfFit), col = 'red',
+            lwd = 1.5) +
+  ggtitle(paste('Local Poly with bandwidth', bestBW$LocalPoly))
+
+
+splinPlotFit <- 
+  basePlot + 
+  geom_line(aes(age_grid, splinFit), col = 'red',
+            lwd = 1.5) +
+  ggtitle(paste('Splines with bandwidth', bestBW$Splines))
+
+grid.arrange(kernPlotFit, knnPlotFit, lpfPlotFit, splinPlotFit,
+             newpage = FALSE)
+
+
+```
+
+```{r 2c}
+# 2 C: Plot Residuals against fitted values
+
+
+# Get fitted values of wage$age
+kernFitY <- predict(kernMod, x, se.fit = FALSE) 
+
+knnMod1 <- kknn::kknn(y ~ x, xyDF, data.frame(x = x),
+                     k = bestBW$KNN, kernel = 'rectangular')
+
+knnFitY <- fitted(knnMod1)
+lpfFitY <- predict(lpfMod, x)
+splinFitY <- predict(splinMod, x)$y
+
+kernResid <- y - kernFitY
+knnResid <- y - knnFitY
+lpfResid <- y - lpfFitY
+splinResid <- y - splinFitY
+
+kernPlotFitResid <- 
+  ggplot() + 
+  geom_point(aes(kernFitY, kernResid)) +
+  ggtitle(paste('Kernel with bandwidth', bestBW$kernel))
+
+knnPlotFitResid <- 
+  ggplot() + 
+  geom_point(aes(knnFitY, knnResid)) +
+  ggtitle(paste('KNN with bandwidth', bestBW$KNN))
+
+
+lpfPlotFitResid <- 
+  ggplot() + 
+  geom_point(aes(lpfFitY, lpfResid)) +
+  ggtitle(paste('Local Poly with bandwidth', bestBW$LocalPoly))
+
+
+splinPlotFitResid <- 
+  ggplot() + 
+  geom_point(aes(splinFitY, splinResid)) +
+  ggtitle(paste('Splines with bandwidth', bestBW$Splines))
+
+grid.arrange(kernPlotFitResid, knnPlotFitResid, 
+             lpfPlotFitResid, splinPlotFitResid,
+             newpage = FALSE)
+
+```
+
+
+```{r q2 extraStuff, eval=FALSE, include=FALSE}
+
+# 
+# kernelFunc <- function(bw, trX, trY, tsX = NULL, tsY = NULL) {
+#   
+#   if ((is.null(tsX) & !is.null(tsY)) || (!is.null(tsX) & is.null(tsY))) {
+#     stop('Either tsX and tsY must both be NULL or both have')
+#   }
+#   
+#   stopifnot(is.numeric(trx), is.numeric(trY), length(trx) == length(trY),
+#             length(bws) == 1, is.numeric(bws))
+#   
+#   if (!is.null(tsX)) {
+#     stopifnot(length(tsX) == length(tsY))
+#     
+#     np::npreg(bws = bw, txdat = trX, tydat = trY, 
+#               exdat = tsX, eydat = tsY)
+#   } else {
+#     np::npreg(bws = bw, txdat = trX, tydat = trY)
+#   }
+# 
+# }
+
+# plot(x, y)
+# lines(age_grid, kernFit, col = 'red', lwd = 3)
+# lines(age_grid, knnFit, col = 'blue', lwd = 3)
+# lines(age_grid, lpfFit, col = 'green', lwd = 3)
+# lines(age_grid, splinFit, col = 'pink', lwd = 3)
+
+
+# 
+# par(mfrow = c(2, 2))
+# 
+# # Kernel
+# plot(x, y)
+# lines(age_grid, kernFit, col = 'red', lwd = 3)
+# title(paste('Fit via Kernel with bandwidth', bestBW$kernel))
+# 
+# # KNN
+# plot(x, y)
+# lines(age_grid, kernFit, col = 'red', lwd = 3)
+# title(paste('Fit via KNN with bandwidth', bestBW$kernel))
+#  
+# # Local Polynomial
+# 
+# 
+# # Splines
+
+
+
+```
+
+
+
+
+
+```{r q3 }
+
+runSmoothSim <- function(n, x_grid){
+  
+  # Generate Data
+  set.seed(10)
+  x1 <- runif(n, 0, 1)
+  eps <- rnorm(n, 0, .4)
+  y1 <- sin(2 * pi * (1 - x1 ^ 2)) + (x1 * eps)
+  actY <- sin(2 * pi * (1 - x1 ^ 2))
+  df <- data.frame(x1, eps, y1, actY)
+  
+  res <- bandwidthByCV(x1, y1, nfold = n, seed = 10,
+                       type = c('kernel', 'lpf', 'splines'),
+                       kerType = 'epanechnikov', numBWs = 30)
+
+  bestBW <- data.frame('kernel' = as.numeric(names(res$bestBandwidth$kernel)),
+                       'LocalPoly' = as.numeric(names(res$bestBandwidth$lpf)),
+                       'Splines' = as.numeric(names(res$bestBandwidth$splines)))
+  
+  bestBW <- data.frame(lapply(bestBW, function(x) round(x, 4)))
+  bestBW
+  
+  kernMod <- np::npreg(bws = bestBW$kernel, txdat = x1, tydat = y1, 
+                       bandwidth.compute = FALSE)
+  lpfMod <- loess(y1 ~ x1, df, span = bestBW$LocalPoly, 
+                  model = TRUE, degree = 1, surface = 'direct')
+  splinMod <- smooth.spline(x = x1, y = y1, spar = bestBW$Splines)
+  
+  
+  # Get fitted values of age_grid
+  kernFitGrid <- predict(kernMod, x_grid, se.fit = FALSE)
+  lpfFitGrid <- predict(lpfMod, x_grid)
+  splinFitGrid <- predict(splinMod, x_grid)$y
+  
+  graphFits <- 
+    data.frame('kernel' = kernFitGrid, 'lpf' = lpfFitGrid,
+               'spline' = splinFitGrid, x = x_grid) %>%
+    tidyr::gather(model, y, -x)
+  
+  # Plots
+  basePlot <- ggplot() + geom_point(aes(x1, y1), alpha = .4) 
+  
+  finalPlot <- 
+    basePlot + 
+    geom_line(aes(x, y, color = model), data = graphFits, lwd = 1.5) +
+    ggtitle(paste('N = ', n,
+                  '\nKernel with bandwidth', bestBW$kernel, 
+                  '\nLocal Poly with bandwidth', bestBW$LocalPoly,
+                  '\nSplines with bandwidth', bestBW$Splines))
+  
+  # Distance Measures
+  kernFit <- predict(kernMod, x1, se.fit = FALSE)
+  lpfFit <- predict(lpfMod, x1)
+  splinFit <- predict(splinMod, x1)$y
+  
+  kernMSE <- sum((kernFit - y1) ^ 2) / n
+  lpfMSE <- sum((lpfFit - y1) ^ 2) / n
+  splinMSE <- sum((splinFit - y1)) ^ 2 / n
+  
+  kernMSEAct <- sum((kernFit - actY) ^ 2) / n
+  lpfMSEAct <- sum((lpfFit - actY) ^ 2) / n
+  splinMSEAct <- sum((splinFit - actY) ^ 2) / n
+  
+  models <- list('kern' = kernMod, 'lpf' = lpfMod, 'splin' = splinMod)
+  fits <- list('kern' = kernFit, 'lpf' = lpfFit, 'splin' = splinFit)
+  mses <- list('kern' = kernMSE, 'lpf' = lpfMSE, 'splin' = splinMSE)
+  msesAct <- list('kern' = kernMSEAct, 'lpf' = lpfMSEAct, 'splin' = splinMSEAct)
+  
+  return(list('bandwidths' = bestBW,
+              'sPlot' = finalPlot,
+              'plotData' = graphFits,
+              'models' = models,
+              'fits' = fits,
+              'mses' = mses,
+              'msesAct' = msesAct,
+              'data' = df))
+}
+
+# X Data for predicting on the models
+x_grid <- seq.int(from = 0, 1, length.out = 100)
+
+# vector of N amounts --- will change it up parallel processing
+amts <- seq(100, 1500, by = 100)
+ramts <- rev(amts)
+upd_amts <- c(amts, ramts)
+
+for (i in 1:length(amts)) {
+  upd_amts[i * 2 - 1] <- amts[i]
+  upd_amts[i * 2] <- ramts[i]
+}
+upd_amts <- upd_amts[1:length(amts)]
+
+```
+
+```{r Set up parallel processing, include=FALSE}
+
+# For parallel processing due to number of simulations
+numCores <- detectCores()
+cl <- parallel::makeCluster(numCores)
+
+clusterEvalQ(cl, library(caret))
+clusterEvalQ(cl, library(np))
+clusterEvalQ(cl, library(kknn))
+clusterEvalQ(cl, library(splines))
+clusterEvalQ(cl, library(ggplot2))
+clusterEvalQ(cl, library(dplyr))
+clusterEvalQ(cl, library(tidyr))
+
+clusterExport(cl, c('x_grid', 'runSmoothSim', 'bandwidthByCV', 'upd_amts'))
+
+```
+
+```{r Run simulation}
+# Run the simulation
+
+res <- vector('list', length(amts))
+res <- parLapply(cl, upd_amts, function(n) runSmoothSim(n, x_grid))
+
+stopCluster(cl)
+
+```
+
+
+```{r q3 convergence}
+
+names(res) <- upd_amts
+
+ord <- order(upd_amts)
+resOrd <- res[ord]
+
+msesList <- lapply(resOrd, function(x) as.data.frame(x$mses))
+mses <- bind_rows(msesList)
+mses$n <- as.numeric(names(resOrd))
+
+# Distance based on the full function including error term
+mses
+
+msesActList <- lapply(resOrd, function(x) as.data.frame(x$msesAct))
+msesAct <- bind_rows(msesActList)
+msesAct$n <- as.numeric(names(resOrd))
+
+# Distance based on the function without the error term
+msesAct
+
+```
+
+Through this simulation, it looks like the Splines model converged the
+fastest. We can conclude that the function converges on the 4th iteration
+as the it does not reach above .002 after that. With this same logic, the 
+Local Polynomial model reaches convergence at about the 7th iteration. The
+Epanechnikov Kernel, technically never reaches convergence using that same
+logic, however, it does rather stabilize at around the 11th iteration in that 
+it doesn't change higher than .032 after that iteration.  
+
+This is consistent with the graphs below, which show the different models
+at the different number of data points. At around the 4th iteration, the splines
+model pretty much looks similar in all subsequent graphs. The Local Polynomial 
+settles down at about the 7th model, which we can tell by comparing it to the 
+Splines model. As noted above, the Kernel model doesn't ever really converge to the
+true function, however, it does stop moving by about the 11th iteration.
+
+Below are the graphs of the models over the different iterations:
+
+```{r q3 graphs}
+
+# Graphs
+lapply(resOrd, function(x) x$sPlot)
+
+
+# plts <- lapply(resOrd, function(x) x$sPlot)
+# names(plts) <- paste0('plot', as.numeric(names(resOrd)))
+# 
+# marrangeGrob(plts, ncol = 1, nrow = 2)
+```
+

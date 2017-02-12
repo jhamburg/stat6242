@@ -1,0 +1,1635 @@
+---
+title: "STAT6242 Project"
+author: "Jonathan Hamburg"
+date: "12/4/2016"
+output: pdf_document
+---
+
+# Pre-Processing and Exploratory Analysis into the Meaning of the Data
+
+## Pre-procssing 
+
+Read in the data and clean it up for processing
+
+```{r package load, message=FALSE, warning=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(gridExtra)
+library(corrplot)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(pls)
+library(elasticnet)
+library(glmnet)
+library(kknn)
+library(gam)
+library(mgcv)
+library(leaps)
+library(randomForest)
+library(C50)
+library(klaR)
+library(caret)
+library(dr)
+library(psych)
+library(pROC)
+library(nnet)
+library(ldr)
+```
+
+
+```{r setup}
+# dir <- "~/sideprojects/gw/stat6242/project"
+dir <- file.path('C:', 'Users', 'm1jmh07', 'Desktop', 'GW', 'STAT6242', 'project')
+trainRaw <- fread(file.path(dir, 'UCI_Credit_Card_train.csv'))
+testRaw <- fread(file.path(dir, 'UCI_Credit_Card_test.csv'))
+
+# Update Names
+oldNm <- c('default.payment.next.month', 'PAY_0')
+newNm <- c('default', 'PAY_1')
+
+setnames(trainRaw, oldNm, newNm)
+setnames(testRaw, oldNm, newNm)
+
+names(trainRaw) <- trainRaw %>% names %>% tolower
+names(testRaw) <- testRaw %>% names %>% tolower
+
+# Change variablse to correct classes
+fVars <- c('sex', 'marriage', 'default')
+factVars <- grep(paste(fVars, collapse = "|"), names(trainRaw),
+                 ignore.case = TRUE, value = TRUE)  
+
+demoVars <- c('sex', 'education', 'marriage', 'age')
+
+correctClassTypes <- function(dt, fVars) {
+  dt[, (fVars) := lapply(.SD, as.factor), .SDcol = fVars]
+  dt
+}
+
+trainUpd <- correctClassTypes(trainRaw, factVars)
+testUpd <- correctClassTypes(testRaw, factVars)
+
+trainUpd2 <- copy(trainUpd)
+testUpd2 <- copy(testUpd)
+trainUpd2$default <- ifelse(trainUpd2$default == 1, 'default', 'noDefault')
+testUpd2$default <- ifelse(testUpd2$default == 1, 'default', 'noDefault')
+
+
+classes <- sapply(trainUpd, class)
+numVars <- names(classes[classes != 'factor'])
+
+payVars <- grep('^pay_[[:digit:]]', numVars, value = TRUE)
+
+billVars <- grep('^bill_', numVars, value = TRUE)
+payAmtVars <- grep('^pay_amt', numVars, value = TRUE)
+othNumVars <- 
+  numVars %>% 
+  setdiff(demoVars) %>%
+  setdiff(payVars) %>%
+  setdiff(billVars) %>%
+  setdiff(payAmtVars)
+
+```
+
+## Exploratory Analysis into the Meaning of the Data
+
+First thing is to explore the dataset and make sure it is in the correct format.
+
+```{r EDA -- Exploratory Data Analysis}
+
+# Summary Statistics
+summary(trainUpd)
+
+#summary(testUpd)
+```
+
+Looking at a quick summary, there seems to be some odd things in the data:
+
+- Negative Numbers in Bill Amounts
+- Pay Status of -2 and 0, which are not in the description of the data
+- 0 for Education and 2 Education variables signifying **unknown**
+
+### Negative Numbers in Bill Amounts
+
+Will now explore these anomalies and try to correct the data for it. Overall,
+we can see that theory is true meaning that negative balances occur when
+someone over pays a bill.
+
+
+```{r Negative Bills}
+ 
+# Negative Bills
+ 
+negBills <- trainUpd[bill_amt1 < 0]
+head(negBills)
+
+# Looks like negative bills come from when pay_amt(N) > bill_amt(N + 1)
+
+negBillTest <- vector('list', 5)
+for (n in 1:5) {
+  billN <- paste0('bill_amt', n)
+  billN1 <- paste0('bill_amt', n + 1)
+  payN <- paste0('pay_amt', n)
+  negBillTest[[n]] <- trainUpd[billN < 0 & (payN < billN1)]
+}
+
+any(sapply(negBillTest, function(x) nrow(x) > 0))
+
+```
+### Pay Status Anomalies
+
+Looking at the pay status anomalies we can see various things.  Firstly and
+mainly, we can sort of understand what the **pay_#** variables are:
+
+- For responses -2 and -1, the person paid off the entire amount 
+associated with the bill
+- For response 1, there are only 3 that are not in the most recent month, and
+those three paid off their amount. However, there are several in the most recent
+month, meaning a response of 1 could mean something different.
+- For 0, the person paid off at least the minimum amount associated with the 
+credit card bill. This means they are not deliquent but it also means that a 
+balance carries over
+- For 2 through 7, this means that the person didn't pay off their bill at all,
+even the minimum amount
+
+```{r Pay status anomalies, include=FALSE}
+
+payStatAnom <- function(dt) {
+  tempTbl <- copy(dt)
+  tempTbl[, id := 1:nrow(tempTbl)]
+   
+  # payStat <- tempTbl[as.character(pay_1) %in% c('-2', '0')]
+  # 
+  # #----------------------------------------
+  # # Check status code when payment was made
+  # # fully for month before
+  # #----------------------------------------
+  # 
+  # payStatFullTest <- vector('list', 5)
+  # for (n in 1:5) {
+  #   payN1 <- paste0('pay_', n + 1)
+  #   billN1 <- paste0('bill_amt', n + 1)
+  #   payAmtN <- paste0('pay_amt', n)
+  #   
+  #   payStatFullTest[[n]] <- tempTbl[get(payAmtN) >= get(billN1), get(payN1)]
+  # }
+  # 
+  # lapply(payStatFullTest, table)
+  # 
+  # potentPayAmtErrs <- which(as.character(payStatFullTest[[2]]) == '2')
+  # tempTbl[pay_amt2 >= bill_amt3][potentPayAmtErrs]
+  
+  # Hm... these values shouldn't exist, so yeah...
+  
+  #----------------------------------------
+  # Going to create a table of pay values for
+  # whether they paid or didn't pay the 
+  # previous bill
+  #----------------------------------------
+  
+  
+  for (n in 1:5) {
+    paidN <- paste0('paid', n + 1)
+    payN1 <- paste0('pay_', n + 1)
+    billN1 <- paste0('bill_amt', n + 1)
+    payAmtN <- paste0('pay_amt', n)
+    
+    tempTbl[, (paidN) := ifelse(get(payAmtN) >= get(billN1), 'all', 
+                                 ifelse(as.character(get(payN1)) %in% c('-2', '-1', '0'), 'some', 'none'))]
+  }
+  
+  meltedPaidDt <- melt(tempTbl, 
+                       id = c('id', demoVars), 
+                       measure = patterns('paid'),
+                       value.name = 'payStatus', 
+                       variable.factor = FALSE)
+  meltedPayDt <- melt(tempTbl[, pay_1 := NULL], 
+                      id = c('id', demoVars),
+                      measure = patterns( 'pay_[[:digit:]]'),
+                      value.name = 'dataStatus',
+                      variable.factor = FALSE)
+  
+  meltedPaidDt[, variable := substr(variable, nchar(variable), nchar(variable))]
+  meltedPayDt[, variable := substr(variable, nchar(variable), nchar(variable))]
+  
+  melted <- merge(meltedPaidDt, meltedPayDt,, by = c('id', demoVars, 'variable'))
+}
+
+payAnomTrain <- payStatAnom(trainUpd)
+payAnomTest <- payStatAnom(testUpd)
+```
+
+```{r Pay status anomalies -- output}
+cat('Pay status by the amount of payment for Training Data\n')
+table(payAnomTrain$payStatus1, payAnomTrain$dataStatus1)
+
+cat('Pay status by the amount of payment for Test Data\n')
+table(payAnomTest$payStatus1, payAnomTest$dataStatus1)
+
+cat('Responses to the Pay Status Variables\n')
+lapply(trainUpd[, payVars, with = FALSE], table)
+```
+
+I then wanted to look closer into -2 values, as in looking into the dataset at 
+earlier stages I saw that a lot of them were associated with negative balances
+for bill amounts. To do this, I saw what pay status variable was assocaited with
+the bill amount, discretizing the bill amount to either a value < 1, = 0, or > 1.
+Ultimately, the results were not as conclusive as according to the output, the 
+data showed the following:
+
+- Even though there was a 0 or negative balance, somehow there were 1 and 2 
+month delays. This obviously doesn't make sense since the payor doesn't actually
+owe any money so there couldn't have been a delay.
+
+```{r Check negative pay status by amts, include=FALSE}
+#----------------------------------------
+# Check negative pay status by amts
+#----------------------------------------
+tempTbl <- copy(trainUpd)
+tempTbl[, id := 1:nrow(tempTbl)]
+
+for (n in 1:6) {
+  billN1 <- paste0('bill_amt', n)
+  negBillN <- paste0('negBill', n)
+  
+  tempTbl[, (negBillN) := ifelse(get(billN1) < 0, 'neg',
+                               ifelse(get(billN1) == 0, 'zero', 'pos'))]
+}
+
+
+meltedBillDt <- melt(tempTbl, 
+                     id = c('id', demoVars), 
+                     measure = patterns('negBill'),
+                     value.name = 'negBill', 
+                     variable.factor = FALSE)
+meltedPayDt <- melt(tempTbl, 
+                    id = c('id', demoVars),
+                    measure = patterns( 'pay_[[:digit:]]'),
+                    value.name = 'dataStatus',
+                    variable.factor = FALSE)
+meltedPayDt[, variable := substr(variable, nchar(variable), nchar(variable))]
+meltedBillDt[, variable := substr(variable, nchar(variable), nchar(variable))]
+
+meltedBill <- merge(meltedBillDt, meltedPayDt,, by = c('id', demoVars, 'variable'))
+
+```
+
+```{r Check negative pay status by amts - output}
+cat('Negative Bill by pay status\n')
+table(meltedBill$negBill1, meltedBill$dataStatus1)
+
+```
+### Education Anomalies
+
+There doesn't seem to be any discernable pattern to see what these odd education 
+data points mean. Because both 5 and 6 mean unknown, I would be tempted to put
+them into the same code, but there may be a difference in unknowns. Therefore,
+when I clean up the datasets, I will create one that deletes out the 0 education
+and combines the 5 and 6 to see if that changes any of the model.
+
+```{r clean up education}
+table(trainUpd$education)
+table(testUpd$education)
+# Look into Education = 0 and Education = 4, 5
+
+educOdd <- trainUpd[education %in% c(0, 5, 6)]
+
+```
+
+# Exploring Variable Relationships
+
+## Demographic Variables Vs Default
+
+In this section, I continue exploring the dataset and specifically look at how 
+the different demographic variables vary with default behavior.  However, 
+before I get into that, there is one important thing that the output from the 
+next shows and that is that my training and testing variables have relatively
+the same distribution as one another.  This is important as if my training
+data had a different distribution from my testing data, the model I build would
+not be able to accurately predict the test data.
+
+Anyways, switch back to examining the demographic variables we can see several 
+things from the four plots below.  First, in terms of gender, there are several
+more males in the dataset than they are females, with about a third more males.
+Additionally, both females and males have a higher concentration of "no default", 
+but Females have a higher chance of defaulting than males do given that their
+ratio is about $\frac{1}{4}$ while the male default ratio is about $\frac{1}{5}$.
+
+Looking at the Age characteristics, most of the data seems to come from those
+ranged 20 to 40, skewing to the right as there are fewer data for older people.
+Additionally, althought it is faint to see, the proportion of defaulters is 
+slightly higher for those in the 20's until their late 20's and early 30's when
+the proportion of non-defaulters is higher.  The age bracket in which defaulters
+are more likely happens in the late 40's early 50's realm. Both of these make
+sense as those in their early 20's are more likely to be in college, have
+student loans and little source of income meaning there is a higher probablity
+of defaulting. On the other hand, for those in their late 40's and 50's, this is
+normally about the time children start to head to college and when a negative
+major life event may spiral out of control financial-wise.  Another way of saying
+this is that, if one loses his/her job in their 30's they may be more okay to 
+get another job or even start a new career than when someone has worked in that 
+field for more than 20 years.
+
+Moving on to marriage, interestingly the proportion of those that defaulted was
+higher for married couples than for single people. This must also have to do 
+with the fact that a married couple is more likely to have children and while
+in most families there are two incomes, there are several families that only 
+have one income. Therefore, I can understand why the default rate is lower for
+those that are single.
+
+Lastly, turning to education, the most interesting thing to note is that while
+the largest number of defaulters in this category are university students, that
+category has the lowest proportion of defaulters compared to high schoolers and
+grad students. In fact, the high schoolers have the highest proportion of 
+defaulters, with almost 50% of the students defaulting. This makes the most 
+sense as there are several sources that indicate more education correlates with
+higher salaries. Therefore, while those that attend college and subsequent grad
+school attain more debt, they also get higher paying jobs that allow them to
+pay down their debt.
+
+```{r Plots of Probability of Default by Different Demographics}
+
+createDemoPlots <- function(tbl, type = c('Training', 'Testing')) {
+  sexPlt <- 
+  ggplot(tbl %>% mutate(gender = ifelse(sex == 1, 'female', 'male'),
+                           def = ifelse(default == 1, 'Default', 'No Default')),
+       aes(x = gender, fill = def, color = def)) + 
+  geom_bar(position = 'dodge', alpha = .6, size = 1) +
+  labs(color = "",
+       fill = "",
+       x = 'Sex',
+       y = 'Count',
+       title = paste('Gender distribution of Defaults',
+                     '\n', type, 'data'))
+
+agePlt <- 
+  ggplot(tbl %>% mutate(def = ifelse(default == 1, 'Default', 'No Default')),
+         aes(x = age, fill = def, color = def)) +
+  geom_density(alpha = .3, size = 1) + 
+  geom_rug() + 
+  labs(color = "",
+       fill = "",
+       x = 'Age',
+       y = 'Density',
+       title = paste('Age distribution of Defaults',
+                     '\n', type, 'data'))
+
+marriedFunc <- 
+  function(x) ifelse(x == 0, 'unknown',
+                ifelse(x == 1, 'married',
+                  ifelse(x == 2, 'single', 'other')))
+marriagePlt <- 
+  ggplot(tbl %>% mutate(mar = marriedFunc(marriage),
+                           def = ifelse(default == 1, 'Default', 'No Default')),
+       aes(x = mar, fill = def, color = def)) + 
+  geom_bar(position = 'dodge', alpha = .6, size = 1) +
+  labs(color = "",
+       fill = "",
+       x = 'Marriage Status',
+       y = 'Count',
+       title = paste('Marriage distribution of Defaults',
+                     '\n', type, 'data')) + 
+  coord_flip()
+
+
+educFunc <- 
+  function(x) ifelse(x == 0, '??',
+                ifelse(x == 1, 'grad',
+                  ifelse(x == 2, 'univ',
+                    ifelse(x == 3, 'high school',
+                      ifelse(x == 4, 'others',
+                        ifelse(x == 5, 'unknown 1', 'unknown 2'))))))
+
+
+educPlt <- 
+  ggplot(tbl %>% mutate(def = ifelse(default == 1, 'Default', 'No Default')),
+       aes(x = as.factor(education), fill = def, color = def)) + 
+  geom_bar(position = 'dodge', alpha = .6, size = 1) +
+  scale_x_discrete("Education Level", 
+                   labels = c('0' = "??", '1' = "Grad", "2" = "University", 
+                              '3' = "High School", '4' = "Others", '5' = 'Unknown 1',
+                               '6' = 'Unknown 2')) + 
+  labs(color = "",
+       fill = "",
+       y = 'Count',
+       title = paste('Education distribution of Defaults',
+                     '\n', type, 'data')) +
+  coord_flip()
+  
+  return(list = list('sexPlt' = sexPlt, 'agePlt' = agePlt,
+                     'marPlt' = marriagePlt, 'educPlt' = educPlt))
+}
+
+demoPltsTrain <- createDemoPlots(trainUpd, type = 'Training')
+demoPltsTest <- createDemoPlots(testUpd, type = 'Testing')
+
+grid.arrange(demoPltsTrain$sexPlt, demoPltsTest$sexPlt,
+             nrow = 1, ncol = 2)
+
+grid.arrange(demoPltsTrain$age, demoPltsTest$agePlt,
+             nrow = 1, ncol = 2)
+
+grid.arrange(demoPltsTrain$marPlt, demoPltsTest$marPlt,
+             nrow = 2, ncol = 1)
+
+grid.arrange(demoPltsTrain$educPlt, demoPltsTest$educPlt,
+             nrow = 2, ncol = 1)
+
+```
+
+While the previous plots show general proportions, these are actually listed
+out below, where the previous conclusions are verified, although the proportions
+are a little bit more exact.
+
+```{r Xtabs Probability of Default by Different Demographics}
+
+gmodels::CrossTable(trainUpd$sex, trainUpd$default, 
+                    prop.chisq = FALSE, prop.t = FALSE)
+
+gmodels::CrossTable(trainUpd$marriage, trainUpd$default, 
+                    prop.chisq = FALSE, prop.t = FALSE)
+
+gmodels::CrossTable(trainUpd$education, trainUpd$default,
+                    prop.chisq = FALSE, prop.t = FALSE)
+
+```
+
+## Exploring Relationships in other Variables
+
+While the previous section was an exploration into the relationships between
+the demographic variables and the probability of defaulting, in order to do
+more analysis I need to look into the relationships of the different variables 
+to themselves.
+
+
+### Continous Variables
+
+Looking at the correlation plot below, for the most part not too many of the
+variables are truly correlated with one another. The real eye catchers are 
+the following:
+
+- The Bill Amounts are highly correlated with one another. This means that
+we may be able to reduce these variables into maybe just one or two variables.
+
+- The Pay Status amounts are also highly correlated with one another. Just like
+the Bill Amounts, this could mean that these variables could be reduced to one
+variable.
+
+- While Bill amount and Pay Status are highly correlated, the pay amounts are 
+not highly correlated with one another. Using the information that we found 
+earlier, this could be because several people are paying off only the minimum 
+and therefore the amounts the pay are extremely variable but the total amounts
+are similar. The thought that confuses me is that if bill amounts are correlated
+then I would assume pay amounts would also be correlated because a portion of 
+people are paying off their limits every time or certain people may not be 
+paying off any portion of their bill at all. Another thought why the first 
+thought might not be true is that there are also negative bills meaning that 
+sometimes people over pay their bill amount and thus they are not paying the
+same each time.
+
+- Limit Balance  seems to have the only negative correlation with any other 
+variable and that variable specifically being pay status. If the determination
+of what the pay status variable means is true, then this makes sense since most
+credit agencies will only increase your credit when you prove you can handle it.
+Therefore, those with higher credit limits probably pay off their bills most of
+the time.
+
+
+```{r Examing the continuous variables corrplot}
+corTrain <- cor(trainUpd[, numVars, with = FALSE])
+corrplot::corrplot(corTrain, method = 'ellipse', type = 'lower', order = 'AOE')
+
+```
+
+
+
+Moving on to the other continous variable plots, we can see some intersting 
+facts:
+
+- Each variable is highly skewed right, so when I could I had to put the axis
+in log scale. This was impossible for bill amounts since there are negative
+bill and I would lose the data in the plots. This means that our predictors
+are not normal due to the skewness.
+
+- For the Bill Amount variables, due to the zoom of the graph it seems as if
+the peak is relatively equal for both defaulters and non-defaulters at a value
+that is relatively closer to 0, probably somewhere between 100 - 1000. However, 
+as the Bill Amount variable moves further away from the present (aka, it 
+increases in number) the density of the defaulters start to jut out a little
+more in the decrease from the peak while the non-defaulter peak becomes more
+prominent. This means that for earlier bills, more of the non-defaulters were
+centered around a lower bill while in the more recent months both non-defaulters
+and defaulters have about the same distribution. We can also see some far 
+outliers in the "rug" portion of the graph, with most of them as non-defaulters.
+
+- The pay scales seem to be bimodal in that there is a peak at around 0 and then
+another peak at a little bit over 1,000. The peak at 0 is both for non-defaulters
+and defaulters, though more prominent for non-defaulters. This makes sense as 
+those thay paid 0 and didn't default probably didn't have a bill greater than 0
+while those that defaulted probably actually had a bill amount.  For the peak at 
+around 1000, in the more recent months both the defaulters and the 
+non-defaulters peak at the same time, but in the earlier months, the 
+non-defaulters peaked at a higher amount. This means that in the earlier months,
+a non-defaulter was more likely to pay off a larger bill, while the distribution
+of the defaulters were steady throughout.
+
+- Lastly, as noted in the comment about the correlation plot, the graph on the
+balance limit confirms that a larger amount of defaulters have lower limit
+that higher limit, while the opposite is true to for non-defaulters.
+
+```{r Examing the continuous variables others}
+
+createContPlots <- function(tbl, graphVar, logscale = FALSE, 
+                            type = c('Training', 'Testing')) {
+  
+  pltTbl <- tbl[, c(graphVar, 'default'), with = FALSE]
+  
+  if (logscale) {
+    # Turn off log scale if there are negative numbers
+    if (any(pltTbl[[graphVar]] < 0)) {
+      logscale = FALSE
+    } else {
+    
+    # Add a miniscule amt to 0 responses to keep them in the graph
+    pltTbl[[graphVar]] <- 
+      ifelse(pltTbl[[graphVar]] == 0, 1, pltTbl[[graphVar]])  
+    }
+    
+    
+  }
+  
+  plt <- 
+    ggplot(pltTbl %>% mutate(def = ifelse(default == 1, 'Default', 'No Default')),
+           aes_string(x = graphVar, fill = 'def', color = 'def')) +
+    geom_density(alpha = .3, size = 1) + 
+    geom_rug() + 
+    labs(color = "",
+         fill = "",
+         x = graphVar,
+         y = 'Density')
+  
+  if (logscale) {
+    plt <- 
+      plt + 
+      scale_x_log10(labels = scales::comma) +
+      labs(title = paste(graphVar, 'distribution of Defaults', 
+                         '\n', type, 'data in log scale'))
+  } else {
+    plt <- 
+      plt + 
+      scale_x_continuous(labels = scales::comma) +
+      labs(title = paste(graphVar, 'distribution of Defaults',
+                       '\n', type, 'data'))
+  }
+  
+  return(plt)
+}
+
+#-- Bill Amts
+billPlots <- 
+  lapply(billVars, 
+         function(x) createContPlots(trainUpd, x, FALSE, type = 'Training'))
+
+names(billPlots) <- billVars
+
+#-- Pay Amts
+payAmtPlots <- 
+  lapply(payAmtVars, 
+         function(x) createContPlots(trainUpd, x, TRUE, type = 'Training'))
+
+names(payAmtPlots) <- payAmtVars
+
+#-- Other Nums
+othNumPlots <- 
+  lapply(othNumVars, 
+         function(x) createContPlots(trainUpd, x, TRUE, type = 'Training'))
+
+names(othNumPlots) <- othNumVars
+
+
+marrangeGrob(c(billPlots, payAmtPlots, othNumPlots), nrow = 2, ncol = 1)
+
+```
+
+
+
+
+
+
+
+# Dimension Reduction 
+
+```{r Modeling Set up}
+
+trainX <- trainUpd %>% dplyr::select_(~-default)
+numTrainX <- trainUpd[, numVars, with = FALSE]
+numContinTrainX <- numTrainX[, c(billVars, othNumVars, payAmtVars), with = FALSE]
+numTrainXY <- trainUpd[, c('default', numVars), with = FALSE]
+
+testX <- testUpd %>% dplyr::select_(~-default)
+numTestX <- testUpd[, numVars, with = FALSE]
+numContinTestX <- numTestX[, c(billVars, othNumVars, payAmtVars), with = FALSE]
+numTestXY <- testUpd[, c('default', numVars), with = FALSE]
+
+
+```
+
+
+In addition to creating specific other datasets, we can also try other techniques
+to reduce the dimensions of the dataset. The techniques done below are 
+dimension reduction regression using:
+
+- Sufficient Dimension Reduction
+- Principal Component Analysis
+
+For the dimension reduction algorithms, I specifically only used the:
+- bill_amt variables
+- pay_amt variables
+- limit_balance
+
+I decided to leave off the age, education and the pay status variables because,
+while those are to be treated as a numeric and continous variable, I think they
+server a separate service to the overall dataset. I specifically did not want to
+reduce the pay status variables due to the importance of the pay_1, which is 
+shown in the variable importance section below.
+
+### Sufficient Dimension Reduction
+
+For the Sufficient Dimension Reduction, I used the Likelihood-based
+dimension reduction algorithm, and specifically the Likelihood Acquired
+Directions due to the categorical response variable. Unfortunately, Sliced
+Inverse Regression requires that the response variable be a continous variable
+so I was unable to use that algorithm. In searching Google for a Sufficient
+Dimension Reduction algorithm that I could use in R that handles a categorical
+response variable, came across the Likelihood-based dimension reduction algorithm.
+
+While there is a tuning parameter in the number of dimensions to reduce to, 
+the function itself has a parameter that I specified that will test whether
+another dimension is necessary. Because this is a classification issue, according
+to the documentation, the number of dimensions most likely will not exceed the
+number of distinct classes, and that is pretty much what I see below.
+
+Looking at the output from the model, we see the model claims there should be
+only one dimension in the final output. Additionally, we can see that the
+the basis vector has a high weight in the direction of *pay_amt2*, with the 
+next two variables of *bill_am1* and *bill_amt2*.  
+
+```{r SDR}
+
+
+# Using Likelihood-based dimension reduction since sliced inverse
+# regression requires a continous response
+modelLDR <- lad(numContinTrainX,
+                trainUpd$default, numdir = 5, numdir.test = TRUE)
+summary(modelLDR)
+plot(modelLDR)
+
+compsLDR <- modelLDR$R
+
+```
+
+### Principal Component Analysis
+
+The principal component analysis uses the prcomp function, which uses singular 
+value decomposition to find the eigenvectors, which as the documentation says,
+is a more numerically stable way to find them. Through the PCA analysis, the
+plot of the variance hits an elbow at 2 dimensions, meaning that I am most
+likely to choose two dimensions to keep. To confirm this, I use the function
+fa.parallel, which compares the scree of factors of the observed data against
+a random data matrix as the original. Overall, the fa.paralell function also
+returns that there should be two dimensions.
+
+Continuing on with the analysis, I can see how much of that variance is explained
+by PCA, and unfortunately by using only these two dimensions, I am only explaining
+about 58% of the variance. From searching the web in a previous assignment, I 
+know that ideally you want to explain at least 80% to 90% of the variance
+in only a few dimensions. Therefore, I can come to the partial conclusion that 
+the variables passed into the PCA analysis are not that correlated with one
+another and therefore, I will be losing a lot of information if I use PCA in 
+a future model.
+
+By rotating the components using the varimax funtion, we can get a better 
+picture of what each component is truly made up of. In the output, we can see
+that as I thought with the initial analysis of the correlation plot earlier,
+PC 1 is made up of all of *bill_amt* variables, while PC 2 is the *pay_amt* 
+variables with limit_bal included. Looking at the output futher, we can see that
+each component basically has equal weight from each of the inputs, although in 
+PC 1, *bill_amt2* has the greatest and *bill_amt6* has the least and in PC 2,
+*pay_amt4* has the least and *pay_amt3* has the most.
+
+```{r PCA}
+# PCA
+outPCA <- prcomp(numContinTrainX, center = TRUE, scale. = TRUE)
+sumPCA <- summary(outPCA)
+plot(outPCA, type = "l", main = "Variance Explained by Principle Component")
+faParallelResults <- fa.parallel(numContinTrainX)
+
+ncompPCA <- faParallelResults$ncomp
+
+#Keep Those components based on scree Plot results
+compsPCA <- outPCA$x[, 1:ncompPCA]
+
+# See how much variance is explained
+print(sumPCA$importance[3, ncompPCA])
+
+## Now that we have the number of components, need to 
+## figure out what those components are
+
+# View plot of PCA to original clusters
+#viewWBiplot(mrPCA, class)
+biplot(outPCA, cex = c(0.8, 1.2))
+abline(h = 0, v = 0, lty = 'dashed')
+
+cat("Look at Correlation Coefficient\n\n")
+print(cor(numContinTrainX, compsPCA))
+cat("\n\n")
+
+cat("Rotating the data for a better understanding\n\n")
+print(varimax(outPCA$rotation[, 1:ncompPCA]))
+
+par(mfrow = c(1, 1))
+```
+
+
+# Inference: Which variables are the best predictors
+
+It is important to get an idea of what are the most important predictors in the
+dataset to make sure to focus in on them in accordance to any special treatment
+in the pre-processing. For the variable importance, I used 4 models to help
+identify what the best predictors are:
+
+- Rpart Decision Tree
+- Lasso 
+- Random Forest 
+- C5.0 Decision Tree
+
+3 of the algorithms that I used are in one feature or another a decision
+tree, where the Lasso is not. I specifically chose decision tree algorithms is
+because one of the biggest strengths of trees is their ease of interpretation and 
+ease for finding variable importance. In the latter case, the most important variable
+is the one that is chosen as the first split of the data, making any person
+that can view a tree smart enough to determine the most important variable in
+that specific algorithm.
+
+I chose those three specific algoriths for different reasons. The Rpart Tree
+is derived by Breiman and uses the CART methodology. The CART methodology was
+specifically derived to do binary splits using entropy to decide which predictor
+should be used for a split. The Rpart methodology also takes advantage of 
+out of sample cross-validation pruning, in which a grown tree is scaled back
+based on the complexity parameter.
+
+On the other hand, Quilan developed the C5.0 decision tree algorithm which
+have different costs and benefits. The algorithm is slightly different in that
+is uses entropy to determine the predictor at a split and then also has a different
+pruning method. Becuase these two behave differently and use different cost
+methods, I wanted to use them both.
+
+I also chose to do Random Forests because although they are more of a black box
+algorithm, there are more and more literature on trying to see what is going on
+under the hood. In short, the Random Forest algorithm is an ensemble method
+that creates several decision trees based in which instead of using all of the
+available predictors for a given split, it randomly selects a couple at a time.
+Eventually, it averages across all of the decision trees to see which variables
+were used the most, and determining variable importance that way. This method
+is also nice because it can highlight local variable influences if say globally
+a variable is not as important as the top 2, it may get buried and if in the 
+random selection those variables are not there, then it would win.
+
+Lastly, I chose to do the Lasso algorithm because it does variable importance
+in the way that the algorithm shrinks the coefficients of unnecessary variables
+down to 0. The algorithm does this by adding a penalty term, lamda, and shrinking
+the values down to 0. Variable importance is then done by looking at the variables
+that remain. As lambda approaches infinity, then all coeficients shrink to 0, thus
+we can work backwards from a large lambda to see which is the first (and most 
+important variable) to have a coefficient.
+
+From the output of the different models, we can clearly see a pattern by 
+examining the most important predictors and the least important predictors. For
+every algorithm, the most important predictor was the pay status variable *pay_1*,
+which is the most recent month's pay status. Interestingly enough, when going 
+through the exploratory data analysis part, this variable had the most amount
+of values of *1*, where as only *pay_2* had a couple of data points with a value
+of 1. Therefore, I wonder if the response of those with 1, means something
+significant and that is why this predictor is important.
+
+*pay_1* was the only agreed upon variable, and as mentioned, it was the top 
+variable in each algorithm. The Rpart algorithm claimed that basically each of 
+pay status variables were important except the oldest one, pay_6, and put the
+order of importance based on the most recent months. The Lasso algorithm,
+also had a good number of pay status variables, though a little out of order. 
+Interestingly, it says that being married is the second most important variable
+and being female is also a top variable. The random forest switches gears a 
+little bit (as discussed above) and identifies no other pay status variables. 
+It instead uses age as the second most important, with the most recent bills
+ and payments as well. The last algorithm C5.0 seemed to identify the most 
+ demographic variables as the most important. Here it claims that after the
+ credit limit (which is the second most important), gender, education and 
+ marriage status are the next key features.
+ 
+
+When looking at the least important variables identified by each algorithm, 
+rPart and Random Forest identify demographic variables as the least important
+while Lasso says the bill amounts are and C5.0 claim the payment amounts are.
+ 
+Overall, each one of these algorithms claimed different things in terms of 
+which predictors were the most important, except for the first variable, again
+of *pay_1*. Two of the algorithms are claiming that demographic variables are 
+important while the other two algorithms are claiming they are irrelevant. Thus,
+the variable importance is relatively inconclusive. This process will probably
+be more worthwhile after cleaning up the datasets a little bit or by
+introducing the dimension reduction efforts through PCA.
+
+
+```{r Seeing which variables have the most influence}
+
+getImportance <- function(modelOut) {
+  tmp <- varImp(modelOut, scale = TRUE)
+  res <- tmp$importance$Overall
+  names(res) <- rownames(tmp$importance)
+  names(sort(res, decreasing = TRUE))
+}
+
+findMostImportantPreds <- function(inputData, models = NULL) {
+  
+  allModels <- c('rpart', 'lasso', 'rf', 'c50')
+  if (is.null(models)) {
+    models <- allModels
+  } else {
+    if (!models %in% allModels) 
+      stop('Models specified must be one of: ', allModels)
+  }
+  
+  # Rpart Decision Tree
+  if ('rpart' %in% models) {
+    set.seed(10)
+    modelRpart <- caret::train(default ~.,
+                         data = inputData,
+                         method = 'rpart',
+                         preProcess = NULL,
+                         trControl = trainControl(method = 'cv'),
+                         tuneGrid = data.frame(cp = 0.0024))
+    inferRpart <- getImportance(modelRpart)
+    rpart.plot(modelRpart$finalModel, sub = NULL, fallen.leaves = FALSE,
+               ycompress = FALSE)
+  }
+  
+  # Lasso
+  if ('lasso' %in% models) {
+    set.seed(10)
+    modelLasso <- caret::train(default ~.,
+                         data = inputData,
+                         method = 'glmnet',
+                         preProcess = NULL,
+                         trControl = trainControl(method = 'cv'),
+                         tuneGrid = data.frame(alpha = 0, lambda = 10 ^ seq(10, -2, length = 100)))
+    inferLasso <- getImportance(modelLasso)
+  }
+
+  # Random Forest
+  if ('rf' %in% models) {
+    set.seed(10)
+    modelRF <- caret::train(default ~.,
+                         data = inputData,
+                         method = 'rf',
+                         preProcess = NULL,
+                         trControl = trainControl(method = 'cv', search = 'random'))
+    inferRF <- getImportance(modelRF)
+  }
+  
+  
+  # C5.0
+  if ('c50' %in% models) {
+    set.seed(10)
+    modelC50 <- caret::train(default ~.,
+                         data = inputData,
+                         method = 'C5.0Tree',
+                         preProcess = NULL,
+                         trControl = trainControl(method = 'cv'))
+    inferC50 <- getImportance(modelC50)
+  }
+  
+  nm <- ls(pattern = 'infer')
+  importVars <- data.frame(z = character(length(get(nm[1]))))
+    
+  if (exists('inferRpart')) importVars$rPart <- inferRpart
+  if (exists('inferLasso')) importVars$lasso <- inferLasso
+  if (exists('inferRF')) importVars$RF <- inferRF
+  if (exists('inferC50')) importVars$c50 <- inferC50
+    
+  importVars <- importVars %>% select_(~-z)
+  
+  importVars
+}
+
+topVars <- findMostImportantPreds(trainUpd)
+head(topVars)
+tail(topVars)
+
+```
+
+
+# Prediction: What created the best model
+
+With all of the pre-processing done, I can now start actually running my dataset
+through some models. For this section, I used the original dataset, given that I 
+wanted to test model performance assuming the dataset was supposed to be as is.
+While this isn't a great assumption, it is a good base for model performance and
+to help better understand what the models can handle and what any corrections 
+to preprocessing may imply to the final model.
+
+For the actual models, I chose to use the following models: Lasso, Ridge, 
+Elasticnet, C5.0 Singular Decision Tree, RPart Decision Tree, Random Forest, 
+Partial Least Squares (PLS), K-Nearest Neighbors (KNN), Logistic Regression (LR),
+and Linear Discriminant Analysis (LDA). These models were chosen specifically 
+because they can do classification and are not only used for regression. 
+Additionally, every model is able to use both continous and categorical predictors
+except for PLS and LDA, in which the categorical predictors are dropped and only
+the numeric predictors are kept (pay status and education are kept and used as
+numeric variables in this context due to ordinal nature of the variables).
+
+Below I first discuss how I implemented these models, specifically stating how
+I chosen tuning parameters (when applicable) and then I get into why I chose
+each specific model and what I hope to get from it.
+
+## Implementing the Models in R and Tuning the Models
+
+To implement these models in R, I use the functionality provided by the *caret*
+library to run each algorithm. The *caret* library is extremely powerful in that
+it currently supports running over 200+ algorithms that are included by other
+packages, and allows a user to call each algorithm in a consistent form.
+
+To do this, I use the *caret::train* function to run a specific algorithm by 
+updating the _method_ parameter. For models that requrie other objects to be 
+passed in, they can be included in the call, such as the binomial('logit') 
+parameter in the glm model for LR.
+
+While so far the *caret* package only seems to be about the making life easier
+from a programming standpoint, its main power is reflected in the automation
+of tuning parameters for each model. With the function I am able to specify how
+the tuning parameters are decided and for most of the algorithms I chose to do 
+a repeated 10 fold Cross-Validation of the training data, 3 times. I say most
+algorithms because for the algorithms that are too computationally expensive, I 
+decided not to use this robustness due to the time I had to run this project.
+Moreover, if I had more time, I would also increase the number of repeats to at
+least 10, which the package itself notes has been identified in literature as 
+being a solid number for robustness.
+
+Lastly, *caret* allows me to manually specify certain tuning parameters if I want.
+For instance, in the Lasso and Ridge regression models, I use the glmnet library
+which will run a Lasso when alpha = 0 and Ridge when alpha = 1. However, the idea
+behind the elasticnet algorithm is that you can actually tune alpha to be value
+between 0 and 1, meaning that alpha itself is a tuning parameter. Therefore, I can
+hardcode one tuning parameter while providing potential values for the algorithm
+to test for the kappa statistic.
+
+## Why Those Models
+
+For each of the models I chose, I will breifly explain why I chose to use them.
+
+- *Lasso*: I chose to use Lasso, because as seen in the variable importance step,
+Lasso can be highly effective in reducing unnecessary coefficients down to 0. By
+doing this, I can possibly increase the predictive power by reducing overfitting
+(aka generalizing the model more) as the model will ultimately use fewer predictors.
+The tuning parameters for Lasso are alpha and lambda, which I held alpha constant
+at 0 (to run Lasso) and gave it several different sizes of lambda in which to test.
+
+- *Ridge*: Similar to Lasso, I wanted to Ridge to test what we learned in class that
+in general Ridge tends to be a better predictor than Lasso because Ridge doesn't
+actually reduce coefficients completely down to 0. In that mindset, while there may
+variables that exhibit very little in terms of prediction to the overall model,
+that variable may matter in very rare circumstances and therefore, it should 
+hopefully provide a better prediction. Since Ridge is ran from the same model
+but with a different tuning parameter, the tuning method was the same, except
+changing alpha to 1.
+
+- *Elasticnet*: As mentioned earlier, I've read online (though not really deeply)
+that Elasticnet is an algorithm that is somewhere in the middle between a Lasso 
+and Ridge algorithm. It does this by choosing an alpha somewhere between 0 and 1. 
+Unfortunatley, I do not know more on this algorithm but I wanted to see if this 
+model potentially does better than both Ridge and Lasso, and if so, that I probably
+will need to read up on it some more due to its power.
+
+- *C5.0 Single Tree and RPart*: I am combining these to algorithms since I used
+both of the in the variable importance section and I wanted to continue to use
+both algorithms as a prediction model too. A hidden agenda here is to see which
+algorithm potentially outperforms the other since both are Decision Trees and yet
+both use different algorithms. The C5.0 algorithm doesn't have any tuning parameters
+but the Rpart algorithm does in the complexity parameter (cp). In this case, I let 
+the function automatically determine the best size for the cp.
+
+- *Random Forest*: As mentioned in the variable importance stage, the Random
+Forest algorithm is an ensemble method that creates several decision trees and
+then averages across them to create a final model used for prediction. I really
+wanted to try this algorithm due to its popularity in prediction competitions such
+as on Kaggle. I know that it derives its power through using a random selection 
+of predictors at each potential split of a decision tree instead of the full range
+of predictors each time. I'm hoping that this use will help predict some irregularities
+in the data.
+
+- *Partial Least Squares (PLS)*: For the most part, PLS is still a black box to 
+me and the main idea I know is that it is basically PCA with supervision from 
+response variable. Because of that, I could use PLS as a dimension reduction
+technique but ultimately decided not to because when I tried to use it, I was 
+getting odd failures in trying to get the components. Ultimately, I therefore 
+wanted to test using it again to get more practice and want to see it lined up
+against other models. Because it can only use numeric predictors, I had to drop
+the categorical predictors. I'm not too worried about this though because looking
+ at the variable importance it seems 50/50 if those variables actually matter so
+this could be a good indication if they are.
+
+- *K-Nearest Neighbors (KNN)*: K Nearest Neighbors is a simple algorithm that will
+help see if the problem is simple enough that a really computationally intensive
+doesn't need to be ran. The fact that KNN will use a number of other data points
+nearby to determine the overall class makes it a flexible and easy model to run.
+Given that there is the tuning paramet of K itself, I originally had it testing 
+for 3 points to using a third of the dataset, however, R kept crashing so I 
+decided to again let caret do the tuning for me as well as choose the number of
+neighbors that I should actually test.
+
+- *Logistic Regression (LR)*: Logistic Regression is one of the most well known
+algorithms for predicting binary responses, which is the root of the current task
+at hand. LR uses the sigmoid function to predict the log-odds of whether the 
+current data is in the specified class. Logistic Regression can be a powerful
+tool and ultimately will squeeze the responses to a probablity between 0 and 1. 
+Determining the threshold to what the probablities are assigned is an important
+task but for the purposes of this, I leave it at the default of .5.  Lastly,
+there are no tuning parameters for LR, so caret did not have to do anything 
+special for this model.
+
+- *Linear Discriminant Analysis (LDA)*: Lastly, there is Linear Discriminant
+Analysis. As in PLS, LDA can only be used with continous variables as the 
+determination of where the linear cuts should be made in the data necessitate that
+the data itself be continous. LDA is more of an extension of Naive Bayes, which
+I had hoped to also try to run given it can use both numeric and categorical 
+predictors and to hopefully see if a more simple model would outdo the more complicated
+LDA and Logistic Regression, however, there were errors when trying to calculate
+the model so I ultimately scrapped it.
+
+
+In addition to the models listed above, I also thought of using other models
+including Generalized Additive Models (GAM) and a Neural Network. In each case
+I ultimately scrapped the model because it was too computationally intensive for
+me and I sadly didn't have the time to see the output. If I could have used them,
+I would have for the following reasons:
+
+-
+
+- 
+
+## Prediction Outcome of the Original Dataset and Model Performance
+
+
+
+```{r function to run each model}
+
+runModels <- function(trData, testData, useModels = NULL) {
+
+  classes <- sapply(trData, class)
+  numVars <- names(classes[classes != 'factor'])
+
+  trainX <- trData %>% dplyr::select_(~-default)
+  numTrainX <- trData[, numVars, with = FALSE]
+  numTrainXY <- trData[, c('default', numVars), with = FALSE]
+  
+  testX <- testData %>% dplyr::select_(~-default)
+  numTestX <- testData[, numVars, with = FALSE]
+  numTestXY <- testData[, c('default', numVars), with = FALSE]
+
+  ctrl <- trainControl(method = 'repeatedcv', 
+                       repeats = 3,
+                       summaryFunction = twoClassSummary,
+                       classProbs = TRUE)
+  
+  # Will not use repeated cv for RF since it is computationally too much
+  ctrlNoRept <- 
+    trainControl(method = 'cv', 
+                 summaryFunction = twoClassSummary,
+                 classProbs = TRUE)
+  
+  # Lasso
+  set.seed(10)
+  modelLasso <- caret::train(default ~.,
+                       data = trData,
+                       method = 'glmnet',
+                       metric = "ROC",
+                       preProcess = NULL,
+                       trControl = ctrl,
+                       tuneGrid = data.frame(alpha = 0, lambda = 10 ^ seq(10, -2, length = 100)))
+  predClassLasso <- predict(modelLasso, testX)
+  predProbLasso <- predict(modelLasso, testX, type = "prob")
+  outputLasso <- confusionMatrix(predClassLasso, testData$default)
+  
+  
+  # Ridge
+  set.seed(10)
+  modelRidge <- caret::train(default ~.,
+                       data = trData,
+                       method = 'glmnet',
+                       metric = "ROC",
+                       preProcess = NULL,
+                       trControl = ctrl,
+                       tuneGrid = data.frame(alpha = 1, lambda = 10 ^ seq(10, -2, length = 100)))
+  predClassRidge <- predict(modelRidge, testX)
+  predProbRidge <- predict(modelRidge, testX, type = "prob")
+  outputRidge <- confusionMatrix(predClassRidge, testData$default)
+  
+  # Elastic Net
+  set.seed(10)
+  modelElastic <- caret::train(default ~.,
+                       data = trData,
+                       method = 'glmnet',
+                       metric = "ROC",
+                       preProcess = NULL,
+                       trControl = ctrl)
+  predClassElastic <- predict(modelElastic, testX)
+  predProbElastic <- predict(modelElastic, testX, type = "prob")
+  outputElastic <- confusionMatrix(predClassElastic, testData$default)
+  
+  # C5.0 Decision Tree
+  set.seed(10)
+  modelC50 <- caret::train(default ~.,
+                       data = trData,
+                       method = 'C5.0Tree',
+                       metric = "ROC",
+                       preProcess = NULL,
+                       trControl = ctrl)
+  predClassC50 <- predict(modelC50, testX)
+  predProbC50 <- predict(modelC50, testX, type = "prob")
+  outputC50 <- confusionMatrix(predClassC50, testData$default)
+  
+  # R Part Decision Tree
+  modelRPart <- caret::train(default ~.,
+                       data = trData,
+                       method = 'rpart',
+                       metric = "ROC",
+                       preProcess = NULL,
+                       trControl = ctrl)
+  predClassRpart <- predict(modelRPart, testX)
+  predProbRPart <- predict(modelRPart, testX, type = "prob")
+  outputRPart <- confusionMatrix(predClassRpart, testData$default)
+  
+  # Random Forest
+  modelRF <- caret::train(default ~.,
+                       data = trData,
+                       method = 'rf',
+                       metric = "ROC",
+                       preProcess = NULL,
+                       trControl = ctrl)
+  predClassRF <- predict(modelRF, testX)
+  predProbRF <- predict(modelRF, testX, type = "prob")
+  outputRF <- confusionMatrix(predClassRF, testData$default)
+  
+  # PLS
+  modelPls <- caret::train(default ~.,
+                       data = numTrainXY,
+                       method = 'pls',
+                       metric = "ROC",
+                       preProcess = NULL,
+                       trControl = ctrl)
+  predClassPls <- predict(modelPls, testX)
+  predProbPls <- predict(modelPls, testX, type = "prob")
+  outputPls <- confusionMatrix(predClassPls, testData$default)
+  
+  
+  # KNN
+  modelKNN <- caret::train(default ~.,
+                       data = trData,
+                       method = 'knn',
+                       metric = "ROC",
+                       preProcess = NULL,
+                       trControl = ctrl)
+  predClassKNN <- predict(modelKNN, testX)
+  predProbKNN <- predict(modelKNN, testX, type = "prob")
+  outputKNN <- confusionMatrix(predClassKNN, testData$default)
+  
+  
+  # Logistic Regression
+  modelLogReg <- caret::train(default ~.,
+                       data = trData,
+                       method = 'glm',
+                       metric = "ROC",
+                       family = binomial('logit'),
+                       preProcess = NULL,
+                       trControl = ctrl)
+  predClassLogReg <- predict(modelLogReg, testX)
+  predProbLogReg <- predict(modelLogReg, testX, type = "prob")
+  outputLogReg <- confusionMatrix(predClassLogReg, testData$default)
+  
+  
+  # LDA
+  modelLDA <- caret::train(default ~.,
+                       data = numTrainXY,
+                       method = 'lda',
+                       metric = "ROC",
+                       preProcess = NULL,
+                       trControl = ctrl)
+  predClassLDA <- predict(modelLDA, testX)
+  predProbLDA <- predict(modelLDA, testX, type = "prob")
+  outputLDA <- confusionMatrix(predClassLDA, testData$default)
+  
+  
+  # # GAM
+  # modelGAM <- caret::train(default ~.,
+  #                      data = trData,
+  #                      method = 'gam',
+  #                      preProcess = NULL,
+  #                      family = multinom(K = 1),
+  #                      trControl = ctrl,
+  #                      tuneGrid = data.frame(method = 'ML', select = c(FALSE)))
+  # outputGAM <- confusionMatrix(predict(modelGAM, testX), testData$default)
+  # 
+  
+  # # Naive Bayes
+  # modelNB <- caret::train(default ~.,
+  #                      data = numTrainXY,
+  #                      method = 'nb',
+  #                      preProcess = NULL,
+  #                      trControl = ctrl)
+  # outputNB <- confusionMatrix(predict(modelNB, testX), testData$default)
+  
+  # Neural Network
+  # modelNN <- caret::train(default ~.,
+  #                      data = trData,
+  #                      method = 'nnet',
+  #                      preProcess = NULL,
+  #                      trControl = ctrl,
+  #                      trace = FALSE)
+  # outputNN <- confusionMatrix(predict(modelNN, testX), testData$default)
+ 
+  
+  predClassMods <- ls(pattern = 'predClass')
+  predProbMods <- ls(pattern = 'predProb')
+  outMods <- ls(pattern = 'output')
+  fullMods <- ls(pattern = 'model')
+  
+  modelNms <- substring(fullMods, 6)
+  
+  predClasses <- lapply(predClassMods, function(x) get(x))
+  names(predClasses) <- modelNms
+  
+  predProbs <- lapply(predProbMods, function(x) get(x))
+  names(predProbs) <- modelNms
+  
+  outs <- lapply(outMods, function(x) get(x))
+  names(outs) <- modelNms
+  
+  mods <- lapply(fullMods, function(x) get(x))
+  names(mods) <- modelNms
+  
+  list('predClass' = predClasses, 'predProbs' = predProbs,
+       'outs' = outs, 'models' = mods)
+}
+
+
+```
+
+
+
+```{r Run models on original data}
+out <- runModels(trainUpd2, testUpd2)
+modelNms <- names(out$models)
+
+# ----------------------------------------------
+# Take a look at the metrics of the models
+# ----------------------------------------------
+
+testResample <- resamples(out$models)
+summary(testResample, metric = 'ROC')
+
+par(mfrow = c(1, 1))
+bwplot(testResample, metric = c('ROC', 'Sens', 'Spec'),
+       'Box Whisker of Metrics')
+
+
+convMetric <- function(x) {
+  data.frame(score = x$overall) %>% 
+    t %>%
+    as.data.frame
+}
+
+origMetricList <- lapply(out$outs,  convMetric) 
+origMetric <- bind_rows(origMetricList)
+origMetric$Model <- names(origMetricList)
+
+origMetric[, c('Model', 'Accuracy', 'Kappa')] %>%
+  arrange_(~desc(Accuracy))
+
+
+# ------------------------------ 
+#  Plot the ROC Curves
+# ------------------------ 
+
+par(mfrow = c(3, 4))
+
+plotROC <- function(pred, resp, nm) {
+  rocTmp <- roc(predictor = pred, response = resp)
+  return(plot(rocTmp, main = nm))
+}
+
+rocPlots <- 
+  lapply(seq_along(out$predProbs),
+         function(x, y, i) { plotROC(x[[i]]$default, testUpd2$default, y[[i]]) },
+         x = out$predProbs, y = names(out$predProbs))
+
+par(mfrow = c(1, 1))
+
+```
+
+
+# Cleaning up the data
+
+## Creating/Cleaning up Variables
+
+In the beginning of the analysis, I found several issues within the data. All of 
+the previous steps use the data as given to create a control, but in this next
+section I create several different datasets as different tests to see if the 
+best model for the original data is still the best model after making some updates
+to the actual data based on some assumptions.
+
+The updates to the data that I will make are as follows:
+
+- Using the PCA dimension and LDR dimension in lieu of some continuous variables
+
+- Combining odd demographic data not in the explanation sheet such as combining
+0 and 3 for married, 0, 5, and 6 for education, -2 and -1 for pay status variable
+and making sure the pay status variable is logical -- aka if billamt <= 0 then
+pay status should have a -1 since you can't be delayed on a bill if there isn't
+a bill to pay.
+
+- Droping those odd data points from the dataset completely
+
+- Creating new variables such as "number of time pay was over 2 months delayed"
+instead of using individual pay status variables.
+
+
+```{r create new datasets}
+
+# Train/Test for using LDR ----
+
+nonDRVars <- setdiff(names(trainUpd), names(numContinTestX))
+
+modelTestLDR <- 
+  lad(numContinTestX, testUpd$default, numdir = 5, numdir.test = TRUE)
+compsTestLDR <- modelTestLDR$R
+
+ldrTrain <- cbind(trainUpd2[, nonDRVars , with = FALSE], compsLDR)
+ldrTest <- cbind(testUpd2[, nonDRVars , with = FALSE], compsTestLDR)
+
+# Train/Test for using PCA ----
+
+compsPCA <- outPCA$x[, 1:ncompPCA]
+testPCA <- prcomp(numContinTestX, center = TRUE, scale. = TRUE)
+compsTestPCA <- testPCA$x[, 1:ncompPCA]
+
+pcaTrain <- cbind(trainUpd2[, nonDRVars , with = FALSE], compsLDR)
+pcaTest <- cbind(testUpd2[, nonDRVars , with = FALSE], compsLDR)
+
+# Train/Test for combined and cleaned Demographics ----
+
+combineDemos <- function(ds) {
+  dt <- copy(ds)
+  
+  # combine odd education responses
+  dt$education <- ifelse(dt$education %in% c(0, 5, 6), 5, dt$education) 
+  
+  # combine odd marriage responses
+  dt$marriage <- ifelse(dt$marriage %in% c(0, 3), 3, dt$marriage)
+  
+  # clean up pay status variables
+    
+    ## First combine -2 and -1 into one variable that means paid off
+    cleanPayVars <- function(x) ifelse(x %in% c(-2, -1), -1, x)
+    dt[, (payVars) := lapply(.SD, cleanPayVars), .SDcol = payVars]
+    
+    ## Second, if there is a bill amount that is zero or negative,
+    ## make sure the corresponding pay status variable is -1 since
+    ## it is impossible to be late on a negative or no bill
+    
+    for (n in 1:6) {
+      billN <- paste0('bill_amt', n)
+      payN <- paste0('pay_', n)
+      dt[, (payN) := ifelse(get(billN) <= 0, -1, get(payN))]
+    }
+    
+    ## Third, if someone did not pay off the bill entirely and has a -2 or -1,
+    ## will change that to 0 since it means they only paid off some.
+    for (n in 1:5) {
+      payN1 <- paste0('pay_', n + 1)
+      billN1 <- paste0('bill_amt', n + 1)
+      payAmtN <- paste0('pay_amt', n)
+        
+      dt[, (payN1) := 
+                  ifelse(get(payN1) < 0 & get(payAmtN) < get(billN1),
+                         0, get(payN1))]
+    }
+ 
+  dt   
+}
+
+combTrain <- combineDemos(trainUpd2)
+combTest <- combineDemos(testUpd2)
+
+
+# ---- Delete Odd Data
+
+deleteOddData <- function(ds) {
+  dt <- copy(ds)
+  
+  # combine odd education responses
+  noOdd <- dt[education != 0 | marriage != 0]
+  
+  for (n in 1:6) {
+    billN <- paste0('bill_amt', n)
+    payN <- paste0('pay_', n)
+    noOdd[, test := ifelse(get(billN) <= 0 & !(get(payN) %in% c(-2, -1, 1)), 1, 0)]
+  }
+  
+  upd <- noOdd[test == 0]
+  
+   for (n in 1:5) {
+    payN1 <- paste0('pay_', n + 1)
+    billN1 <- paste0('bill_amt', n + 1)
+    payAmtN <- paste0('pay_amt', n)
+      
+    upd[, test := ifelse(get(payN1) < 0 & get(payAmtN) < get(billN1), 1, 0)]
+  }
+  
+  res <- upd[test == 0]
+  
+  cat('# of dropped observations: ',  5000 - nrow(res), '\n')
+  
+  res   
+}
+
+delTrain <- deleteOddData(trainUpd2)
+delTest <- deleteOddData(testUpd2)
+
+
+
+```
+
+
+## LDR Data
+
+```{r Function to test other datasets}
+runAndGetStats <- function(train, test) {
+  
+  importantVars <-  findMostImportantPreds(train)  
+  
+  out <- runModels(train, test)
+  modelNms <- names(out$models)
+  
+  # ----------------------------------------------
+  # Take a look at the metrics of the models
+  # ----------------------------------------------
+  
+  testResample <- resamples(out$models)
+
+  summary(testResample, metric = 'ROC')
+  
+  par(mfrow = c(1, 1))
+  bwplot(testResample, metric = c('ROC', 'Sens', 'Spec'),
+         'Box Whisker of Metrics')
+
+  
+  convMetric <- function(x) {
+    data.frame(score = x$overall) %>% 
+      t %>%
+      as.data.frame
+  }
+  
+  metricList <- lapply(out$outs,  convMetric) 
+  metrics <- bind_rows(metricList)
+  metrics$Model <- names(metricList)
+  
+  metrics[, c('Model', 'Accuracy', 'Kappa')] %>%
+    arrange_(~desc(Accuracy))
+  
+  
+  # ------------------------------ 
+  #  Plot the ROC Curves
+  # ------------------------ 
+  
+  par(mfrow = c(3, 4))
+  
+  plotROC <- function(pred, resp, nm) {
+    rocTmp <- roc(predictor = pred, response = resp)
+    return(plot(rocTmp, main = nm))
+  }
+  
+  rocPlots <- 
+    lapply(seq_along(out$predProbs),
+           function(x, y, i) { plotROC(x[[i]]$default, testUpd2$default, y[[i]]) },
+           x = out$predProbs, y = names(out$predProbs))
+  
+  par(mfrow = c(1, 1))
+  
+  return(list('importantVars' = importantVars, 'testResample' = testResample, 
+              'metricList' = metrics, 'rocPlots' = rocPlots))
+}
+
+```
+
+
+```{r Run models on ldr data}
+
+ldrOutput <- runAndGetStats(ldrTrain, ldrTest)
+
+cat('Most Important Variables\n')
+head(ldrOutput$importantVars)
+
+cat('Least Important Variables\n')
+tail(ldrOutput$importantVars)
+
+
+summary(ldrOutput$testResample, metric = 'ROC')
+  
+par(mfrow = c(1, 1))
+bwplot(ldrOutput$testResample, 
+       metric = c('ROC', 'Sens', 'Spec'),
+       main = 'Box Whisker of Metrics')
+
+ldrOutput$metricList[, c('Model', 'Accuracy', 'Kappa')] %>%
+    arrange_(~desc(Accuracy))
+
+```
+
+
+## PCA Data
+
+```{r Run models on pca data}
+
+pcaOutput <- runAndGetStats(pcaTrain, pcaTest)
+
+cat('Most Important Variables\n')
+head(pcaOutput$importantVars)
+
+cat('Least Important Variables\n')
+tail(pcaOutput$importantVars)
+
+
+summary(pcaOutput$testResample, metric = 'ROC')
+  
+par(mfrow = c(1, 1))
+bwplot(pcaOutput$testResample, 
+       metric = c('ROC', 'Sens', 'Spec'),
+       main = 'Box Whisker of Metrics')
+
+pcaOutput$metricList[, c('Model', 'Accuracy', 'Kappa')] %>%
+    arrange_(~desc(Accuracy))
+
+```
+
+
+## Cleaned Demo Data
+
+```{r Run models on cleaned data}
+
+combOutput <- runAndGetStats(combTrain, combTest)
+
+cat('Most Important Variables\n')
+head(combOutput$importantVars)
+
+cat('Least Important Variables\n')
+tail(combOutput$importantVars)
+
+
+summary(combOutput$testResample, metric = 'ROC')
+  
+par(mfrow = c(1, 1))
+bwplot(combOutput$testResample, 
+       metric = c('ROC', 'Sens', 'Spec'),
+       main = 'Box Whisker of Metrics')
+
+combOutput$metricList[, c('Model', 'Accuracy', 'Kappa')] %>%
+    arrange_(~desc(Accuracy))
+
+```
+
+
+
+## Cleaned Deleted Data
+
+```{r Run models on deleted data}
+
+delOutput <- runAndGetStats(delTrain, delTest)
+
+cat('Most Important Variables\n')
+head(delOutput$importantVars)
+
+cat('Least Important Variables\n')
+tail(delOutput$importantVars)
+
+
+summary(delOutput$testResample, metric = 'ROC')
+  
+par(mfrow = c(1, 1))
+bwplot(delOutput$testResample, 
+       metric = c('ROC', 'Sens', 'Spec'),
+       main = 'Box Whisker of Metrics')
+
+delOutput$metricList[, c('Model', 'Accuracy', 'Kappa')] %>%
+    arrange_(~desc(Accuracy))
+
+```
