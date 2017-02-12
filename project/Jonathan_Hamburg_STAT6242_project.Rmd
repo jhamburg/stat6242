@@ -102,7 +102,7 @@ First thing is to explore the dataset and make sure it is in the correct format.
 # Summary Statistics
 summary(trainUpd)
 
-#summary(testUpd)
+summary(testUpd)
 ```
 
 Looking at a quick summary, there seems to be some odd things in the data:
@@ -167,20 +167,20 @@ payStatAnom <- function(dt) {
   # # fully for month before
   # #----------------------------------------
   # 
-  # payStatFullTest <- vector('list', 5)
-  # for (n in 1:5) {
-  #   payN1 <- paste0('pay_', n + 1)
-  #   billN1 <- paste0('bill_amt', n + 1)
-  #   payAmtN <- paste0('pay_amt', n)
-  #   
-  #   payStatFullTest[[n]] <- tempTbl[get(payAmtN) >= get(billN1), get(payN1)]
-  # }
-  # 
-  # lapply(payStatFullTest, table)
-  # 
-  # potentPayAmtErrs <- which(as.character(payStatFullTest[[2]]) == '2')
-  # tempTbl[pay_amt2 >= bill_amt3][potentPayAmtErrs]
-  
+  payStatFullTest <- vector('list', 5)
+  for (n in 1:5) {
+    payN1 <- paste0('pay_', n + 1)
+    billN1 <- paste0('bill_amt', n + 1)
+    payAmtN <- paste0('pay_amt', n)
+
+    payStatFullTest[[n]] <- tempTbl[get(payAmtN) >= get(billN1), get(payN1)]
+  }
+
+  lapply(payStatFullTest, table)
+
+  potentPayAmtErrs <- which(as.character(payStatFullTest[[2]]) == '2')
+  tempTbl[pay_amt2 >= bill_amt3][potentPayAmtErrs]
+
   # Hm... these values shouldn't exist, so yeah...
   
   #----------------------------------------
@@ -197,7 +197,8 @@ payStatAnom <- function(dt) {
     payAmtN <- paste0('pay_amt', n)
     
     tempTbl[, (paidN) := ifelse(get(payAmtN) >= get(billN1), 'all', 
-                                 ifelse(as.character(get(payN1)) %in% c('-2', '-1', '0'), 'some', 'none'))]
+                                 ifelse(as.character(get(payN1)) %in% 
+                                          c('-2', '-1', '0'), 'some', 'none'))]
   }
   
   meltedPaidDt <- melt(tempTbl, 
@@ -214,7 +215,7 @@ payStatAnom <- function(dt) {
   meltedPaidDt[, variable := substr(variable, nchar(variable), nchar(variable))]
   meltedPayDt[, variable := substr(variable, nchar(variable), nchar(variable))]
   
-  melted <- merge(meltedPaidDt, meltedPayDt,, by = c('id', demoVars, 'variable'))
+  melted <- merge(meltedPaidDt, meltedPayDt, by = c('id', demoVars, 'variable'))
 }
 
 payAnomTrain <- payStatAnom(trainUpd)
@@ -272,7 +273,7 @@ meltedPayDt <- melt(tempTbl,
 meltedPayDt[, variable := substr(variable, nchar(variable), nchar(variable))]
 meltedBillDt[, variable := substr(variable, nchar(variable), nchar(variable))]
 
-meltedBill <- merge(meltedBillDt, meltedPayDt,, by = c('id', demoVars, 'variable'))
+meltedBill <- merge(meltedBillDt, meltedPayDt, by = c('id', demoVars, 'variable'))
 
 ```
 
@@ -1250,13 +1251,13 @@ runModels <- function(trData, testData, useModels = NULL) {
   # outputNB <- confusionMatrix(predict(modelNB, testX), testData$default)
   
   # Neural Network
-  # modelNN <- caret::train(default ~.,
-  #                      data = trData,
-  #                      method = 'nnet',
-  #                      preProcess = NULL,
-  #                      trControl = ctrl,
-  #                      trace = FALSE)
-  # outputNN <- confusionMatrix(predict(modelNN, testX), testData$default)
+  modelNN <- caret::train(default ~.,
+                       data = trData,
+                       method = 'nnet',
+                       preProcess = NULL,
+                       trControl = ctrl,
+                       trace = FALSE)
+  outputNN <- confusionMatrix(predict(modelNN, testX), testData$default)
  
   
   predClassMods <- ls(pattern = 'predClass')
