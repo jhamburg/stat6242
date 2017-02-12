@@ -12,6 +12,7 @@ output: pdf_document
 Read in the data and clean it up for processing
 
 ```{r package load, message=FALSE, warning=FALSE}
+library(rprojroot)
 library(dplyr)
 library(data.table)
 library(ggplot2)
@@ -40,8 +41,8 @@ library(ldr)
 
 
 ```{r setup}
-# dir <- "~/sideprojects/gw/stat6242/project"
-dir <- file.path('C:', 'Users', 'm1jmh07', 'Desktop', 'GW', 'STAT6242', 'project')
+projDir <-rprojroot::find_root("README.md")
+dir <- file.path(projDir, 'project')
 trainRaw <- fread(file.path(dir, 'UCI_Credit_Card_train.csv'))
 testRaw <- fread(file.path(dir, 'UCI_Credit_Card_test.csv'))
 
